@@ -306,10 +306,26 @@ body{transition:background .2s,color .2s;}
   .plant-name{font-size:9px;}
   .plant-req{font-size:9px;}
   .timer-config{width:90vw;}
+  /* Botões de ação sempre visíveis no mobile (sem hover) */
+  .task-acts{opacity:1!important;}
+  /* Drag handle sempre visível e maior no mobile */
+  .drag-h{opacity:.5!important;font-size:18px;padding:0 4px;cursor:grab;}
+  /* Botões de ação maiores para toque */
+  .ib{width:34px;height:34px;font-size:17px;}
+  /* Espaçamento extra no task-row para acomodar botões maiores */
+  .task-row{padding:12px 10px;}
+  /* Chips menores para caber tudo */
+  .chip{font-size:10px;padding:1px 5px;}
 }
 @media(max-width:400px){
   .garden-grid{grid-template-columns:repeat(5,1fr);gap:4px;}
   .plant-emoji{font-size:22px;}
+  .ib{width:32px;height:32px;}
+}
+/* Garante visibilidade em qualquer dispositivo touch (pointer:coarse = tela tátil) */
+@media(pointer:coarse){
+  .task-acts{opacity:1!important;}
+  .drag-h{opacity:.5!important;}
 }
 </style>
 </head>
@@ -677,8 +693,8 @@ body{transition:background .2s,color .2s;}
 // ╔══════════════════════════════════════════════════════╗
 // ║  SUPABASE CONFIG — substitua com suas credenciais   ║
 // ╚══════════════════════════════════════════════════════╝
-const SUPABASE_URL     = 'https://ktldhmnokiehqydqzjbf.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt0bGRobW5va2llaHF5ZHF6amJmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1ODUxOTksImV4cCI6MjA5NDE2MTE5OX0.G9GXAPlnBfofkfH6K90x7vM3zDPrX5EfwHt-Ziijcng';
+const SUPABASE_URL     = 'https://SEU-PROJETO.supabase.co';
+const SUPABASE_ANON_KEY = 'sua-anon-key-aqui';
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -1100,9 +1116,108 @@ document.getElementById('clearDone').addEventListener('click',()=>{
 });
 
 // ═══════════════════════════════════════
-// DRAG & DROP (with Supabase order save)
+// DRAG & DROP — mouse (desktop) + touch (mobile)
 // ═══════════════════════════════════════
-function bindDrag(){document.querySelectorAll('.task-card').forEach(c=>{c.addEventListener('dragstart',e=>{dragSrc=c.dataset.id;setTimeout(()=>c.classList.add('dragging'),0);e.dataTransfer.effectAllowed='move';});c.addEventListener('dragend',()=>{c.classList.remove('dragging');document.querySelectorAll('.task-card').forEach(x=>x.classList.remove('drag-over'));});c.addEventListener('dragover',e=>{e.preventDefault();c.classList.add('drag-over');});c.addEventListener('dragleave',()=>c.classList.remove('drag-over'));c.addEventListener('drop',e=>{e.preventDefault();c.classList.remove('drag-over');if(dragSrc&&dragSrc!==c.dataset.id){const si=tasks.findIndex(t=>t.id===dragSrc),di=tasks.findIndex(t=>t.id===c.dataset.id);if(si>=0&&di>=0){const[item]=tasks.splice(si,1);tasks.splice(di,0,item);tasks.forEach((t,i)=>t._order=i);lsSaveTasks();render();sbSaveAllTasks();}}});});}
+function bindDrag(){
+  document.querySelectorAll('.task-card').forEach(card=>{
+
+    // ── MOUSE (desktop) ──
+    card.addEventListener('dragstart',e=>{
+      dragSrc=card.dataset.id;
+      setTimeout(()=>card.classList.add('dragging'),0);
+      e.dataTransfer.effectAllowed='move';
+    });
+    card.addEventListener('dragend',()=>{
+      card.classList.remove('dragging');
+      document.querySelectorAll('.task-card').forEach(x=>x.classList.remove('drag-over'));
+    });
+    card.addEventListener('dragover',e=>{e.preventDefault();card.classList.add('drag-over');});
+    card.addEventListener('dragleave',()=>card.classList.remove('drag-over'));
+    card.addEventListener('drop',e=>{
+      e.preventDefault();card.classList.remove('drag-over');
+      if(dragSrc&&dragSrc!==card.dataset.id){
+        const si=tasks.findIndex(t=>t.id===dragSrc),di=tasks.findIndex(t=>t.id===card.dataset.id);
+        if(si>=0&&di>=0){const[item]=tasks.splice(si,1);tasks.splice(di,0,item);tasks.forEach((t,i)=>t._order=i);lsSaveTasks();render();sbSaveAllTasks();}
+      }
+    });
+
+    // ── TOUCH (mobile) ──
+    const handle=card.querySelector('.drag-h');
+    if(!handle) return;
+
+    let touchDragging=false, touchClone=null, touchSrc=null, lastOver=null;
+
+    handle.addEventListener('touchstart',e=>{
+      e.stopPropagation();
+      touchSrc=card;
+      touchDragging=true;
+
+      // Cria clone visual que segue o dedo
+      touchClone=card.cloneNode(true);
+      const r=card.getBoundingClientRect();
+      touchClone.style.cssText=`
+        position:fixed;left:${r.left}px;top:${r.top}px;
+        width:${r.width}px;opacity:.85;z-index:9999;
+        pointer-events:none;border-radius:var(--r);
+        box-shadow:0 8px 24px rgba(0,0,0,.18);
+        transition:none;`;
+      document.body.appendChild(touchClone);
+      card.classList.add('dragging');
+    },{passive:true});
+
+    handle.addEventListener('touchmove',e=>{
+      if(!touchDragging) return;
+      e.preventDefault();
+      const t=e.touches[0];
+
+      // Move o clone
+      if(touchClone){
+        const r=card.getBoundingClientRect();
+        touchClone.style.left=(t.clientX - r.width/2)+'px';
+        touchClone.style.top =(t.clientY - 30)+'px';
+      }
+
+      // Encontra o card sob o dedo
+      touchClone.style.display='none';
+      const el=document.elementFromPoint(t.clientX,t.clientY);
+      touchClone.style.display='';
+      const over=el&&el.closest('.task-card');
+
+      if(over && over!==touchSrc){
+        if(lastOver && lastOver!==over) lastOver.classList.remove('drag-over');
+        over.classList.add('drag-over');
+        lastOver=over;
+      } else if(!over && lastOver){
+        lastOver.classList.remove('drag-over');
+        lastOver=null;
+      }
+    },{passive:false});
+
+    handle.addEventListener('touchend',e=>{
+      if(!touchDragging) return;
+      touchDragging=false;
+
+      // Remove clone e estilos
+      if(touchClone){touchClone.remove();touchClone=null;}
+      card.classList.remove('dragging');
+      document.querySelectorAll('.task-card').forEach(x=>x.classList.remove('drag-over'));
+
+      // Reordena se caiu em cima de outro card
+      if(lastOver && lastOver!==touchSrc){
+        const si=tasks.findIndex(t=>t.id===touchSrc.dataset.id);
+        const di=tasks.findIndex(t=>t.id===lastOver.dataset.id);
+        if(si>=0&&di>=0){
+          const[item]=tasks.splice(si,1);
+          tasks.splice(di,0,item);
+          tasks.forEach((t,i)=>t._order=i);
+          lsSaveTasks();render();sbSaveAllTasks();
+          notify('↕️','Tarefa reordenada!');
+        }
+      }
+      lastOver=null;touchSrc=null;
+    },{passive:true});
+  });
+}
 
 // ═══════════════════════════════════════
 // FOCUS — Date.now() anchored
