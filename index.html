@@ -677,8 +677,8 @@ body{transition:background .2s,color .2s;}
 // ╔══════════════════════════════════════════════════════╗
 // ║  SUPABASE CONFIG — substitua com suas credenciais   ║
 // ╚══════════════════════════════════════════════════════╝
-const SUPABASE_URL     = 'https://ktldhmnokiehqydqzjbf.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt0bGRobW5va2llaHF5ZHF6amJmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1ODUxOTksImV4cCI6MjA5NDE2MTE5OX0.G9GXAPlnBfofkfH6K90x7vM3zDPrX5EfwHt-Ziijcng';
+const SUPABASE_URL     = 'https://SEU-PROJETO.supabase.co';
+const SUPABASE_ANON_KEY = 'sua-anon-key-aqui';
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -771,29 +771,49 @@ function rowToTask(r){
 async function sbLoadAll(){
   if(!currentUser) return;
   showSync(true);
+
+  // Safety timeout — se demorar mais de 8s, libera com localStorage
+  const safetyTimer=setTimeout(()=>{
+    console.warn('sbLoadAll timeout — usando localStorage');
+    tasks=lsLoadTasks().map(t=>({priority:'none',recur:'none',_open:false,...t}));
+    totalFocusSecs=lsLoadGarden();
+    dark=localStorage.getItem(TK)==='dark';
+    showSync(false);
+    showApp();
+    applyTheme();
+    applyRecur();
+    cur=todayStr();upDayNav();render();checkPending();
+    updFocusUI();upFocusTotalDisp();
+  }, 8000);
+
   try{
     // Tasks
-    const{data:rows,error:tErr}=await sb.from('tasks')
+    const{data:rows, error:tErr}=await sb.from('tasks')
       .select('*').eq('user_id',currentUser.id).order('sort_order').order('created_at');
-    if(tErr) throw tErr;
+    if(tErr && tErr.code !== 'PGRST116') throw tErr;
     tasks=(rows||[]).map(rowToTask);
     lsSaveTasks();
 
-    // Garden
-    const{data:g}=await sb.from('garden').select('focus_seconds').eq('user_id',currentUser.id).single();
+    // Garden — usa maybeSingle() para não jogar erro se não existir
+    const{data:g}=await sb.from('garden')
+      .select('focus_seconds').eq('user_id',currentUser.id).maybeSingle();
     if(g) totalFocusSecs=g.focus_seconds||0;
+    else  totalFocusSecs=lsLoadGarden();
     lsSaveGarden();
 
-    // Theme preference
-    const{data:p}=await sb.from('preferences').select('theme').eq('user_id',currentUser.id).single();
-    if(p){dark=p.theme==='dark';localStorage.setItem(TK,p.theme);}
-    else{dark=localStorage.getItem(TK)==='dark';}
+    // Theme preference — usa maybeSingle() para não jogar erro se não existir
+    const{data:p}=await sb.from('preferences')
+      .select('theme').eq('user_id',currentUser.id).maybeSingle();
+    if(p){ dark=p.theme==='dark'; localStorage.setItem(TK,p.theme); }
+    else  { dark=localStorage.getItem(TK)==='dark'; }
+
   }catch(e){
-    console.warn('sbLoadAll fallback to localStorage',e);
+    console.warn('sbLoadAll fallback to localStorage:', e);
     tasks=lsLoadTasks().map(t=>({priority:'none',recur:'none',_open:false,...t}));
     totalFocusSecs=lsLoadGarden();
     dark=localStorage.getItem(TK)==='dark';
   }finally{
+    clearTimeout(safetyTimer);
     showSync(false);
   }
 }
@@ -1464,31 +1484,48 @@ async function boot(){
   applyTheme();
 
   sb.auth.onAuthStateChange(async(event,session)=>{
-    if(event==='SIGNED_IN'||event==='TOKEN_REFRESHED'||event==='INITIAL_SESSION'){
-      if(!session)return;
-      currentUser=session.user;
-      showLoading();
-      updateUserBadge(currentUser);
-      await sbLoadAll();
+    try{
+      if(event==='SIGNED_IN'||event==='TOKEN_REFRESHED'||event==='INITIAL_SESSION'){
+        if(!session){ showAuthScreen(); return; }
+        currentUser=session.user;
+        showLoading();
+        updateUserBadge(currentUser);
+        await sbLoadAll();
+        applyTheme();
+        applyRecur();
+        cur=todayStr();upDayNav();render();checkPending();
+        updFocusUI();upFocusTotalDisp();
+        subscribeRealtime();
+        showApp();
+      } else if(event==='SIGNED_OUT'){
+        currentUser=null;
+        if(realtimeSub){sb.removeChannel(realtimeSub);realtimeSub=null;}
+        showAuthScreen();
+      } else if(event==='PASSWORD_RECOVERY'){
+        showAuthScreen();
+        setAuthMsg('Defina sua nova senha após entrar na conta.',false);
+      }
+    }catch(err){
+      // Nunca deixa o usuário preso na tela de loading
+      console.error('boot error:',err);
+      tasks=lsLoadTasks().map(t=>({priority:'none',recur:'none',_open:false,...t}));
+      totalFocusSecs=lsLoadGarden();
+      dark=localStorage.getItem(TK)==='dark';
       applyTheme();
       applyRecur();
       cur=todayStr();upDayNav();render();checkPending();
       updFocusUI();upFocusTotalDisp();
-      subscribeRealtime();
       showApp();
-    } else if(event==='SIGNED_OUT'){
-      currentUser=null;
-      if(realtimeSub){sb.removeChannel(realtimeSub);realtimeSub=null;}
-      showAuthScreen();
-    } else if(event==='PASSWORD_RECOVERY'){
-      showAuthScreen();
-      setAuthMsg('Defina sua nova senha após entrar na conta.',false);
     }
   });
 
   // Restaura sessão existente (login automático ao abrir o app)
-  const{data:{session}}=await sb.auth.getSession();
-  if(!session) showAuthScreen();
+  try{
+    const{data:{session}}=await sb.auth.getSession();
+    if(!session) showAuthScreen();
+  }catch(e){
+    showAuthScreen();
+  }
 }
 
 boot();
