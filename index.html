@@ -5,6 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="theme-color" content="#F6F5F1" id="metaThemeColor">
 <meta name="color-scheme" content="light" id="metaColorScheme">
+<!-- PWA / iOS -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="DayFlow">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="manifest" href="manifest.json">
 <title>DayFlow</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -684,6 +690,7 @@ body{transition:background .2s,color .2s;}
 <style>
 @keyframes syncPulse{0%,100%{opacity:.4;}50%{opacity:1;}}
 @keyframes spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}
+@keyframes slideUp{from{opacity:0;transform:translateX(-50%) translateY(16px);}to{opacity:1;transform:translateX(-50%) translateY(0);}}
 .offline-badge{position:fixed;bottom:60px;right:20px;background:var(--amber);color:#fff;font-size:11px;padding:4px 10px;border-radius:99px;font-family:var(--mono);z-index:400;display:none;}
 .offline-badge.show{display:block;}
 </style>
@@ -1043,16 +1050,56 @@ function upProg(){
 // ═══════════════════════════════════════
 // RENDER TASKS
 // ═══════════════════════════════════════
+const PRIO_ORDER={high:0, med:1, low:2, none:3};
+
+function sortByPriority(arr){
+  return [...arr].sort((a,b)=>{
+    const pa=PRIO_ORDER[a.priority]??3, pb=PRIO_ORDER[b.priority]??3;
+    if(pa!==pb) return pa-pb;
+    return (a._order??0)-(b._order??0); // dentro da mesma prioridade, mantém ordem manual
+  });
+}
+
 function render(){
   const list=document.getElementById('tasksList'),day=tasks.filter(t=>t.date===cur);
   let vis=day.filter(t=>filt==='all'?true:filt==='done'?t.done:filt==='pending'?!t.done:filt==='high'?t.priority==='high':true);
   upProg();
   if(!vis.length){list.innerHTML=`<div class="empty-state"><span class="es-ico">${day.length?'🔍':'🗒️'}</span><p>${day.length?'Nenhuma tarefa neste filtro':'Sem tarefas para '+dayLabel(cur).toLowerCase()+'.<br><span style="font-size:12px;color:var(--text3);">Digite acima e pressione Enter</span>'}</p></div>`;return;}
   list.innerHTML='';
-  const pend=vis.filter(t=>!t.done),done=vis.filter(t=>t.done);
-  if(pend.length){if(filt==='all'&&done.length){const l=document.createElement('div');l.className='sec-label';l.textContent='⏳ Pendentes';list.appendChild(l);}pend.forEach(t=>list.appendChild(mkCard(t)));}
-  if(done.length&&filt!=='done'){const l=document.createElement('div');l.className='sec-label';l.textContent='✅ Concluídas';list.appendChild(l);done.forEach(t=>list.appendChild(mkCard(t)));}
-  else if(filt==='done'){done.forEach(t=>list.appendChild(mkCard(t)));}
+
+  const pend=sortByPriority(vis.filter(t=>!t.done));
+  const done=vis.filter(t=>t.done);
+
+  if(pend.length){
+    // Mostra label "Pendentes" só quando há também concluídas visíveis
+    if(filt==='all' && done.length){
+      const l=document.createElement('div');l.className='sec-label';l.textContent='⏳ Pendentes';list.appendChild(l);
+    }
+    // Agrupa pendentes por prioridade com separador visual
+    let lastPrio=null;
+    pend.forEach(t=>{
+      const p=t.priority||'none';
+      if(filt==='all' && p!==lastPrio){
+        if(p!=='none'){ // só exibe separador se tem prioridade definida
+          const sep=document.createElement('div');
+          sep.className='sec-label';
+          sep.style.cssText='padding:6px 0 4px;font-size:9px;';
+          sep.textContent=p==='high'?'🔴 Alta prioridade':p==='med'?'🟡 Média prioridade':'🟢 Baixa prioridade';
+          list.appendChild(sep);
+        }
+        lastPrio=p;
+      }
+      list.appendChild(mkCard(t));
+    });
+  }
+
+  if(done.length && filt!=='done'){
+    const l=document.createElement('div');l.className='sec-label';l.textContent='✅ Concluídas';list.appendChild(l);
+    done.forEach(t=>list.appendChild(mkCard(t)));
+  } else if(filt==='done'){
+    done.forEach(t=>list.appendChild(mkCard(t)));
+  }
+
   bindDrag();
 }
 
@@ -1070,8 +1117,8 @@ function mkCard(t){
   div.innerHTML=`${ps}<div class="task-row"><span class="drag-h">⠿</span><div class="cb${t.done?' on':''}" data-cb="${t.id}" role="checkbox" aria-checked="${t.done}" tabindex="0"><em class="cb-inner">✓</em></div><div class="task-body"><div class="task-name${t.done?' done':''}">${escHtml(t.name)}</div><div class="task-chips">${tc}${cc}${rc}${pChip}</div></div><div class="task-acts"><button class="ib ifoc" data-focus="${t.id}">🎯</button><button class="ib" data-expand="${t.id}">✏️</button><button class="ib idel" data-del="${t.id}">🗑</button></div></div><div class="task-exp${t._open?' open':''}" id="ex_${t.id}"><div class="exp-grid"><div class="ef"><div class="el">⏰ Início</div><input class="ei" type="time" value="${t.timeStart||''}" data-field="timeStart" data-tid="${t.id}"></div><div class="ef"><div class="el">🏁 Fim</div><input class="ei" type="time" value="${t.timeEnd||''}" data-field="timeEnd" data-tid="${t.id}"></div><div class="ef"><div class="el">🗂 Categoria</div><select class="ei" data-field="category" data-tid="${t.id}">${CATS.map(c=>`<option${t.category===c?' selected':''}>${c}</option>`).join('')}</select></div><div class="ef"><div class="el">🚦 Prioridade</div><div class="pchips">${PC('high','Alta')}${PC('med','Média')}${PC('low','Baixa')}</div></div></div><div class="ef" style="margin-top:8px;"><div class="el">🔁 Repetição</div><div class="rchips" style="margin-top:4px;">${RO('none','Nenhuma','🚫')}${RO('daily','Diária','📆')}${RO('weekdays','Úteis','💼')}${RO('weekly','Semanal','🗓')}</div></div><div class="ef" style="margin-top:8px;"><div class="el">📝 Notas</div><textarea class="exp-notes" data-field="desc" data-tid="${t.id}" placeholder="Observações…">${escHtml(t.desc||'')}</textarea></div></div>`;
   div.addEventListener('click',e=>{
     const cb=e.target.closest('[data-cb]'),ex=e.target.closest('[data-expand]'),dl=e.target.closest('[data-del]'),fo=e.target.closest('[data-focus]'),pr=e.target.closest('[data-prio]'),re=e.target.closest('[data-recur]');
-    if(cb){const t2=fT(cb.dataset.cb);if(t2){t2.done=!t2.done;saveData(t2);render();if(t2.done)notify('✅','Tarefa concluída!');}}
-    else if(dl){const id=dl.dataset.del;tasks=tasks.filter(x=>x.id!==id);saveData(null,id);render();notify('🗑','Removida');}
+    if(cb){const t2=fT(cb.dataset.cb);if(t2){t2.done=!t2.done;saveData(t2);if(t2.done)cancelTaskNotif(t2.id);else scheduleTaskNotif(t2);render();if(t2.done)notify('✅','Tarefa concluída!');}}
+    else if(dl){const id=dl.dataset.del;cancelTaskNotif(id);tasks=tasks.filter(x=>x.id!==id);saveData(null,id);render();notify('🗑','Removida');}
     else if(ex){const t2=fT(ex.dataset.expand);if(t2){t2._open=!t2._open;lsSaveTasks();render();}}
     else if(fo){openFocus(fo.dataset.focus);}
     else if(pr){const t2=fT(pr.dataset.tid);if(t2){t2.priority=t2.priority===pr.dataset.prio?'none':pr.dataset.prio;saveData(t2);render();}}
@@ -1080,7 +1127,15 @@ function mkCard(t){
   div.querySelectorAll('[data-cb]').forEach(el=>el.addEventListener('keydown',e=>{if(e.key===' '||e.key==='Enter'){e.preventDefault();el.click();}}));
   div.querySelectorAll('[data-field]').forEach(inp=>inp.addEventListener(inp.tagName==='TEXTAREA'?'input':'change',e=>{
     const t2=fT(e.target.dataset.tid);
-    if(t2){t2[e.target.dataset.field]=e.target.value;saveData(t2);render();}
+    if(t2){
+      t2[e.target.dataset.field]=e.target.value;
+      saveData(t2);
+      // Reagenda notificação se horário foi alterado
+      if(e.target.dataset.field==='timeStart'||e.target.dataset.field==='timeEnd'){
+        scheduleTaskNotif(t2);
+      }
+      render();
+    }
   }));
   return div;
 }
@@ -1101,7 +1156,9 @@ function addTask(){
     category:document.getElementById('nCat').value,timeStart:document.getElementById('nStart').value,
     timeEnd:document.getElementById('nEnd').value,desc:'',_open:false,_order:tasks.length};
   tasks.push(nt);
-  saveData(nt);render();
+  saveData(nt);
+  scheduleTaskNotif(nt); // agenda lembrete se tiver horário
+  render();
   notify('✅','Tarefa adicionada!');
   document.getElementById('addInput').value='';resetF();
 }
@@ -1643,7 +1700,237 @@ async function boot(){
   }
 }
 
-boot();
-</script>
+// ═══════════════════════════════════════
+// NOTIFICAÇÕES — Web Push + Service Worker
+// Funciona no iPhone com iOS 16.4+ quando
+// o app está salvo na tela inicial (PWA)
+// ═══════════════════════════════════════
+let swReg = null;               // registro do service worker
+let notifPermission = Notification.permission; // 'default'|'granted'|'denied'
+const scheduledNotifs = {};     // taskId → timeoutId (evita duplicatas)
+
+// ── Registra o Service Worker ──
+async function registerSW(){
+  if(!('serviceWorker' in navigator)) return;
+  try{
+    swReg = await navigator.serviceWorker.register('/sw.js');
+    console.log('SW registrado:', swReg.scope);
+  }catch(e){
+    console.warn('SW falhou:', e);
+  }
+}
+
+// ── Pede permissão de notificação ──
+async function requestNotifPermission(){
+  if(!('Notification' in window)){
+    notify('ℹ️','Seu navegador não suporta notificações');
+    return false;
+  }
+  if(Notification.permission === 'granted') return true;
+  if(Notification.permission === 'denied'){
+    notify('⚠️','Notificações bloqueadas — ative nas configurações do Safari');
+    return false;
+  }
+  const result = await Notification.requestPermission();
+  notifPermission = result;
+  if(result === 'granted'){
+    notify('🔔','Notificações ativadas!');
+    scheduleAllNotifs(); // agenda todas ao ativar
+    return true;
+  }
+  return false;
+}
+
+// ── Dispara uma notificação imediatamente (para teste) ──
+function fireNotif(title, body, tag='dayflow'){
+  if(Notification.permission !== 'granted') return;
+  // Via SW (necessário no iOS PWA)
+  if(swReg){
+    swReg.active?.postMessage({ type:'SCHEDULE_NOTIFICATION', title, body, delay:0, tag });
+  } else {
+    new Notification(title, { body, icon:'/icon-192.png', tag });
+  }
+}
+
+// ── Agenda notificação para uma tarefa com horário ──
+function scheduleTaskNotif(task){
+  if(Notification.permission !== 'granted') return;
+  if(!task.timeStart || task.done) return;
+  if(task.date !== todayStr()) return; // só agenda tarefas de hoje
+
+  // Cancela agendamento anterior se existir
+  if(scheduledNotifs[task.id]){
+    clearTimeout(scheduledNotifs[task.id]);
+    delete scheduledNotifs[task.id];
+  }
+
+  const [h, m] = task.timeStart.split(':').map(Number);
+  const now = new Date();
+  const target = new Date();
+  target.setHours(h, m, 0, 0);
+
+  const delay = target - now;
+  if(delay < 0) return; // já passou
+
+  const title = '⏰ ' + task.name;
+  const body = task.timeEnd
+    ? `Horário: ${task.timeStart} → ${task.timeEnd}${task.category ? ' • '+task.category : ''}`
+    : `Agendada para ${task.timeStart}${task.category ? ' • '+task.category : ''}`;
+
+  scheduledNotifs[task.id] = setTimeout(()=>{
+    // Verifica se ainda está pendente antes de disparar
+    const t = fT(task.id);
+    if(t && !t.done){
+      if(swReg){
+        swReg.active?.postMessage({ type:'SCHEDULE_NOTIFICATION', title, body, delay:0, tag: task.id });
+      } else {
+        new Notification(title, { body, icon:'/icon-192.png', tag: task.id });
+      }
+    }
+    delete scheduledNotifs[task.id];
+  }, delay);
+}
+
+// ── Cancela notificação de uma tarefa ──
+function cancelTaskNotif(taskId){
+  if(scheduledNotifs[taskId]){
+    clearTimeout(scheduledNotifs[taskId]);
+    delete scheduledNotifs[taskId];
+  }
+}
+
+// ── Agenda notificações para todas as tarefas de hoje ──
+function scheduleAllNotifs(){
+  if(Notification.permission !== 'granted') return;
+  const today = todayStr();
+  tasks.filter(t => t.date === today && !t.done && t.timeStart).forEach(scheduleTaskNotif);
+}
+
+// ── Cancela tudo (ex: ao fazer logout) ──
+function cancelAllNotifs(){
+  Object.keys(scheduledNotifs).forEach(id => {
+    clearTimeout(scheduledNotifs[id]);
+    delete scheduledNotifs[id];
+  });
+}
+
+// ── UI: banner de ativação de notificações ──
+function showNotifBanner(){
+  // Só mostra se ainda não perguntou e se é PWA ou Safari
+  if(Notification.permission !== 'default') return;
+  if(document.getElementById('notifBanner')) return;
+
+  const banner = document.createElement('div');
+  banner.id = 'notifBanner';
+  banner.style.cssText = `
+    position:fixed;bottom:70px;left:50%;transform:translateX(-50%);
+    background:var(--surface);border:1px solid var(--border2);
+    border-radius:var(--r);padding:14px 18px;
+    display:flex;align-items:center;gap:12px;
+    box-shadow:var(--shadow-lg);z-index:400;
+    max-width:340px;width:90%;animation:slideUp .3s ease;
+  `;
+  banner.innerHTML = `
+    <span style="font-size:24px;flex-shrink:0">🔔</span>
+    <div style="flex:1">
+      <div style="font-size:13px;font-weight:500;color:var(--text);margin-bottom:2px;">Ativar lembretes?</div>
+      <div style="font-size:11px;color:var(--text2);">Receba notificação quando chegar o horário de uma tarefa</div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:5px;flex-shrink:0">
+      <button onclick="requestNotifPermission();document.getElementById('notifBanner').remove();"
+        style="padding:6px 12px;border-radius:6px;border:none;background:var(--accent);color:#fff;font-size:12px;cursor:pointer;font-family:var(--font);white-space:nowrap;">
+        Ativar
+      </button>
+      <button onclick="localStorage.setItem('notifDismissed','1');document.getElementById('notifBanner').remove();"
+        style="padding:5px 12px;border-radius:6px;border:1px solid var(--border);background:none;color:var(--text3);font-size:12px;cursor:pointer;font-family:var(--font);">
+        Agora não
+      </button>
+    </div>
+  `;
+  document.body.appendChild(banner);
+}
+
+// ── Adiciona opção de notificações no menu do usuário ──
+function addNotifMenuItem(){
+  const dropdown = document.getElementById('userDropdown');
+  if(!dropdown || document.getElementById('notifMenuItem')) return;
+
+  const item = document.createElement('button');
+  item.id = 'notifMenuItem';
+  item.style.cssText = 'width:100%;padding:10px 14px;background:none;border:none;border-top:1px solid var(--border);text-align:left;font-size:13px;color:var(--text2);cursor:pointer;font-family:var(--font);display:flex;align-items:center;gap:7px;';
+  item.innerHTML = `🔔 <span id="notifMenuLabel">${Notification.permission==='granted'?'Lembretes ativos ✓':'Ativar lembretes'}</span>`;
+  item.onclick = async() => {
+    toggleUserDropdown();
+    if(Notification.permission === 'granted'){
+      notify('🔔','Lembretes já estão ativos!');
+    } else {
+      await requestNotifPermission();
+      const label = document.getElementById('notifMenuLabel');
+      if(label) label.textContent = Notification.permission==='granted'?'Lembretes ativos ✓':'Ativar lembretes';
+    }
+  };
+
+  // Insere antes do botão de sair
+  const logoutBtn = dropdown.querySelector('button');
+  if(logoutBtn) dropdown.insertBefore(item, logoutBtn);
+  else dropdown.appendChild(item);
+}
+
+// ═══════════════════════════════════════
+// BOOT
+// ═══════════════════════════════════════
+async function boot(){
+  dark=localStorage.getItem(TK)==='dark';
+  applyTheme();
+  await registerSW();
+
+  sb.auth.onAuthStateChange(async(event,session)=>{
+    try{
+      if(event==='SIGNED_IN'||event==='TOKEN_REFRESHED'||event==='INITIAL_SESSION'){
+        if(!session){ showAuthScreen(); return; }
+        currentUser=session.user;
+        showLoading();
+        updateUserBadge(currentUser);
+        await sbLoadAll();
+        applyTheme();
+        applyRecur();
+        cur=todayStr();upDayNav();render();checkPending();
+        updFocusUI();upFocusTotalDisp();
+        subscribeRealtime();
+        showApp();
+        addNotifMenuItem();
+        scheduleAllNotifs();
+        if(!localStorage.getItem('notifDismissed') && Notification.permission==='default'){
+          setTimeout(showNotifBanner, 3000);
+        }
+      } else if(event==='SIGNED_OUT'){
+        currentUser=null;
+        cancelAllNotifs();
+        if(realtimeSub){sb.removeChannel(realtimeSub);realtimeSub=null;}
+        showAuthScreen();
+      } else if(event==='PASSWORD_RECOVERY'){
+        showAuthScreen();
+        setAuthMsg('Defina sua nova senha após entrar na conta.',false);
+      }
+    }catch(err){
+      console.error('boot error:',err);
+      tasks=lsLoadTasks().map(t=>({priority:'none',recur:'none',_open:false,...t}));
+      totalFocusSecs=lsLoadGarden();
+      dark=localStorage.getItem(TK)==='dark';
+      applyTheme();applyRecur();
+      cur=todayStr();upDayNav();render();checkPending();
+      updFocusUI();upFocusTotalDisp();
+      showApp();
+      scheduleAllNotifs();
+    }
+  });
+
+  try{
+    const{data:{session}}=await sb.auth.getSession();
+    if(!session) showAuthScreen();
+  }catch(e){ showAuthScreen(); }
+}
+
+boot();</script>
 </body>
 </html>
