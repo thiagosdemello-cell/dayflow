@@ -749,14 +749,59 @@ function showSync(on){document.getElementById('syncBar').style.display=on?'block
 function setOffline(v){document.getElementById('offlineBadge').classList.toggle('show',v);}
 
 // ═══════════════════════════════════════
-// LOCAL STORAGE (fallback + cache)
+// LOCAL STORAGE (fallback + cache + backup diário)
 // ═══════════════════════════════════════
-const LS_TASKS='df_tasks_'+SUPABASE_URL;
-const LS_GARDEN='df_garden_'+SUPABASE_URL;
-const LS_HIST='df_hist_v3';
+const LS_TASKS  = 'df_tasks_'  + SUPABASE_URL;
+const LS_GARDEN = 'df_garden_' + SUPABASE_URL;
+const LS_HIST   = 'df_hist_v3';
+const LS_BACKUP = 'df_backup_' + SUPABASE_URL; // backup diário com timestamp
 
-function lsSaveTasks(){localStorage.setItem(LS_TASKS,JSON.stringify(tasks));}
-function lsLoadTasks(){try{return JSON.parse(localStorage.getItem(LS_TASKS)||'[]');}catch(e){return[];}}
+// Salva tarefas — nunca sobrescreve com lista vazia
+function lsSaveTasks(){
+  if(tasks.length === 0){
+    const existing = localStorage.getItem(LS_TASKS);
+    if(existing && existing !== '[]'){
+      console.warn('lsSaveTasks: ignorando save vazio, há dados no cache');
+      return;
+    }
+  }
+  localStorage.setItem(LS_TASKS, JSON.stringify(tasks));
+  // Salva backup diário (mantém os últimos 3 dias)
+  if(tasks.length > 0) saveBackup();
+}
+
+// Backup com timestamp — mantém 3 snapshots diários
+function saveBackup(){
+  try{
+    const today = todayStr();
+    const bk = getBackups();
+    bk[today] = { tasks: JSON.parse(JSON.stringify(tasks)), ts: Date.now() };
+    // Remove backups com mais de 3 dias
+    const keys = Object.keys(bk).sort();
+    while(keys.length > 3){ delete bk[keys.shift()]; keys.shift(); }
+    localStorage.setItem(LS_BACKUP, JSON.stringify(bk));
+  }catch(e){ console.warn('saveBackup error', e); }
+}
+
+function getBackups(){
+  try{ return JSON.parse(localStorage.getItem(LS_BACKUP)||'{}'); }
+  catch(e){ return {}; }
+}
+
+// Retorna o backup mais recente com tarefas (para recuperação)
+function getLatestBackup(){
+  const bk = getBackups();
+  const keys = Object.keys(bk).sort().reverse();
+  for(const k of keys){
+    if(bk[k]?.tasks?.length > 0) return { date: k, tasks: bk[k].tasks };
+  }
+  return null;
+}
+
+function lsLoadTasks(){
+  try{ return JSON.parse(localStorage.getItem(LS_TASKS)||'[]'); }
+  catch(e){ return []; }
+}
 function lsSaveGarden(){localStorage.setItem(LS_GARDEN,String(totalFocusSecs));}
 function lsLoadGarden(){return parseInt(localStorage.getItem(LS_GARDEN)||'0');}
 function getH(){try{return JSON.parse(localStorage.getItem(LS_HIST)||'{}');}catch(e){return{};}}
@@ -791,53 +836,101 @@ function rowToTask(r){
 // ═══════════════════════════════════════
 // SUPABASE — LOAD ALL DATA
 // ═══════════════════════════════════════
+let appBooted = false;
+
 async function sbLoadAll(){
   if(!currentUser) return;
   showSync(true);
 
-  // Safety timeout — se demorar mais de 8s, libera com localStorage
-  const safetyTimer=setTimeout(()=>{
-    console.warn('sbLoadAll timeout — usando localStorage');
-    tasks=lsLoadTasks().map(t=>({priority:'none',recur:'none',_open:false,...t}));
-    totalFocusSecs=lsLoadGarden();
-    dark=localStorage.getItem(TK)==='dark';
+  const safetyTimer = setTimeout(()=>{
+    console.warn('sbLoadAll timeout → fallback localStorage');
+    tasks = lsLoadTasks().map(t=>({priority:'none',recur:'none',_open:false,...t}));
+    totalFocusSecs = lsLoadGarden();
+    dark = localStorage.getItem(TK)==='dark';
     showSync(false);
-    showApp();
-    applyTheme();
-    applyRecur();
-    cur=todayStr();upDayNav();render();checkPending();
-    updFocusUI();upFocusTotalDisp();
-  }, 8000);
+    bootApp();
+  }, 6000);
 
   try{
-    // Tasks
-    const{data:rows, error:tErr}=await sb.from('tasks')
+    const{data:rows, error:tErr} = await sb.from('tasks')
       .select('*').eq('user_id',currentUser.id).order('sort_order').order('created_at');
     if(tErr && tErr.code !== 'PGRST116') throw tErr;
-    tasks=(rows||[]).map(rowToTask);
-    lsSaveTasks();
 
-    // Garden — usa maybeSingle() para não jogar erro se não existir
-    const{data:g}=await sb.from('garden')
+    const loaded = (rows||[]).map(rowToTask);
+
+    // ── PROTEÇÃO CONTRA PERDA DE DADOS ──
+    // Se o Supabase devolveu lista vazia MAS temos backup local com dados,
+    // NÃO sobrescreve — usa o backup e re-sobe para o Supabase
+    if(loaded.length === 0){
+      const backup = getLatestBackup();
+      if(backup && backup.tasks.length > 0){
+        console.warn(`Supabase vazio mas backup de ${backup.date} tem ${backup.tasks.length} tarefas — restaurando`);
+        tasks = backup.tasks.map(t=>({priority:'none',recur:'none',_open:false,...t}));
+        // Re-sobe o backup para o Supabase
+        setTimeout(async()=>{
+          if(currentUser && isOnline){
+            const rows2 = tasks.map((t,i)=>taskToRow({...t,_order:i},currentUser.id));
+            const{error:e2} = await sb.from('tasks').upsert(rows2,{onConflict:'id'});
+            if(!e2){
+              notify('🔄','Tarefas restauradas do backup!');
+            } else {
+              console.warn('restore upsert error', e2);
+            }
+          }
+        }, 1000);
+      } else {
+        tasks = []; // genuinamente vazio
+      }
+    } else {
+      tasks = loaded;
+    }
+
+    lsSaveTasks(); // salva (e atualiza backup se tasks.length > 0)
+
+    const{data:g} = await sb.from('garden')
       .select('focus_seconds').eq('user_id',currentUser.id).maybeSingle();
-    if(g) totalFocusSecs=g.focus_seconds||0;
-    else  totalFocusSecs=lsLoadGarden();
+    totalFocusSecs = g ? (g.focus_seconds||0) : lsLoadGarden();
     lsSaveGarden();
 
-    // Theme preference — usa maybeSingle() para não jogar erro se não existir
-    const{data:p}=await sb.from('preferences')
+    const{data:p} = await sb.from('preferences')
       .select('theme').eq('user_id',currentUser.id).maybeSingle();
     if(p){ dark=p.theme==='dark'; localStorage.setItem(TK,p.theme); }
-    else  { dark=localStorage.getItem(TK)==='dark'; }
+    else { dark=localStorage.getItem(TK)==='dark'; }
 
   }catch(e){
-    console.warn('sbLoadAll fallback to localStorage:', e);
-    tasks=lsLoadTasks().map(t=>({priority:'none',recur:'none',_open:false,...t}));
-    totalFocusSecs=lsLoadGarden();
-    dark=localStorage.getItem(TK)==='dark';
+    console.warn('sbLoadAll erro → fallback localStorage:', e);
+    tasks = lsLoadTasks().map(t=>({priority:'none',recur:'none',_open:false,...t}));
+    // Se localStorage também vazio, tenta o backup
+    if(tasks.length === 0){
+      const backup = getLatestBackup();
+      if(backup) tasks = backup.tasks.map(t=>({priority:'none',recur:'none',_open:false,...t}));
+    }
+    totalFocusSecs = lsLoadGarden();
+    dark = localStorage.getItem(TK)==='dark';
   }finally{
     clearTimeout(safetyTimer);
     showSync(false);
+  }
+}
+
+// Inicializa o app após dados carregados (chamado 1x apenas)
+function bootApp(){
+  if(appBooted) return;
+  appBooted = true;
+  applyTheme();
+  applyRecur();
+  cur = todayStr();
+  upDayNav();
+  render();
+  checkPending();
+  updFocusUI();
+  upFocusTotalDisp();
+  subscribeRealtime();
+  showApp();
+  addNotifMenuItem();
+  scheduleAllNotifs();
+  if(!localStorage.getItem('notifDismissed') && Notification.permission==='default'){
+    setTimeout(showNotifBanner, 3000);
   }
 }
 
@@ -861,7 +954,13 @@ function sbDeleteTask(taskId){
 }
 
 async function sbSaveAllTasks(){
-  if(!currentUser||!isOnline||!tasks.length) return;
+  // PROTEÇÃO: nunca sobrescreve com lista vazia se há dados no banco
+  if(!currentUser||!isOnline) return;
+  if(!tasks.length){
+    // Verifica se tem dados no banco antes de não fazer nada
+    console.warn('sbSaveAllTasks: tasks vazio, ignorando para evitar perda de dados');
+    return;
+  }
   const rows=tasks.map((t,i)=>taskToRow({...t,_order:i},currentUser.id));
   const{error}=await sb.from('tasks').upsert(rows,{onConflict:'id'});
   if(error) console.warn('sbSaveAllTasks',error);
@@ -945,19 +1044,6 @@ async function sendMagicLink(){
   document.getElementById('authMsg').textContent='';
 }
 
-function showApp(){
-  document.getElementById('authOverlay').style.display='none';
-}
-function showAuthScreen(){
-  document.getElementById('authOverlay').style.display='flex';
-  document.getElementById('authLoading').style.display='none';
-  document.getElementById('authLogin').style.display='block';
-}
-function showLoading(){
-  document.getElementById('authOverlay').style.display='flex';
-  document.getElementById('authLogin').style.display='none';
-  document.getElementById('authLoading').style.display='block';
-}
 
 // ═══════════════════════════════════════
 // ONLINE/OFFLINE
@@ -1513,17 +1599,33 @@ function checkPending(){
 }
 
 // ═══════════════════════════════════════
-// RECURRING
+// RECURRING — só roda DEPOIS do Supabase carregar
 // ═══════════════════════════════════════
 function applyRecur(){
+  // Só aplica se temos dados reais carregados (evita criar tarefas com lista vazia)
+  if(!currentUser) return;
   const today=todayStr(),dow=new Date().getDay(),isWD=dow>=1&&dow<=5,toAdd=[];
   tasks.filter(t=>t.recur&&t.recur!=='none').forEach(t=>{
-    if((t.recur==='daily'||(t.recur==='weekdays'&&isWD)||t.recur==='weekly')&&!tasks.find(x=>x.name===t.name&&x.date===today)){
-      const nt={...t,id:Date.now()+Math.random()+'',done:false,date:today,_open:false,_if:undefined};
-      toAdd.push(nt);
+    const alreadyExists=tasks.find(x=>
+      x.name===t.name && x.date===today && x.recur===t.recur
+    );
+    if(!alreadyExists){
+      const shouldAdd=
+        t.recur==='daily' ||
+        (t.recur==='weekdays' && isWD) ||
+        (t.recur==='weekly' && t.date && new Date(t.date+'T12:00:00').getDay()===dow);
+      if(shouldAdd){
+        const nt={...t,id:Date.now()+Math.random()+'',done:false,date:today,_open:false,_if:undefined};
+        toAdd.push(nt);
+      }
     }
   });
-  if(toAdd.length){tasks.push(...toAdd);toAdd.forEach(t=>sbSaveTask(t));lsSaveTasks();saveH();}
+  if(toAdd.length){
+    tasks.push(...toAdd);
+    toAdd.forEach(t=>sbSaveTask(t));
+    lsSaveTasks();
+    saveH();
+  }
 }
 
 // ═══════════════════════════════════════
@@ -1641,63 +1743,10 @@ async function doForgot(){
 
 async function doLogout(){
   document.getElementById('userDropdown').style.display='none';
+  appBooted = false;
+  cancelAllNotifs();
   await sb.auth.signOut();
   tasks=[];totalFocusSecs=0;
-}
-
-// ═══════════════════════════════════════
-// BOOT — sessão persistente automática
-// O Supabase salva o token no localStorage e o renova
-// automaticamente. Ao abrir o app (PWA ou favorito),
-// o usuário já entra direto sem precisar logar de novo.
-// ═══════════════════════════════════════
-async function boot(){
-  dark=localStorage.getItem(TK)==='dark';
-  applyTheme();
-
-  sb.auth.onAuthStateChange(async(event,session)=>{
-    try{
-      if(event==='SIGNED_IN'||event==='TOKEN_REFRESHED'||event==='INITIAL_SESSION'){
-        if(!session){ showAuthScreen(); return; }
-        currentUser=session.user;
-        showLoading();
-        updateUserBadge(currentUser);
-        await sbLoadAll();
-        applyTheme();
-        applyRecur();
-        cur=todayStr();upDayNav();render();checkPending();
-        updFocusUI();upFocusTotalDisp();
-        subscribeRealtime();
-        showApp();
-      } else if(event==='SIGNED_OUT'){
-        currentUser=null;
-        if(realtimeSub){sb.removeChannel(realtimeSub);realtimeSub=null;}
-        showAuthScreen();
-      } else if(event==='PASSWORD_RECOVERY'){
-        showAuthScreen();
-        setAuthMsg('Defina sua nova senha após entrar na conta.',false);
-      }
-    }catch(err){
-      // Nunca deixa o usuário preso na tela de loading
-      console.error('boot error:',err);
-      tasks=lsLoadTasks().map(t=>({priority:'none',recur:'none',_open:false,...t}));
-      totalFocusSecs=lsLoadGarden();
-      dark=localStorage.getItem(TK)==='dark';
-      applyTheme();
-      applyRecur();
-      cur=todayStr();upDayNav();render();checkPending();
-      updFocusUI();upFocusTotalDisp();
-      showApp();
-    }
-  });
-
-  // Restaura sessão existente (login automático ao abrir o app)
-  try{
-    const{data:{session}}=await sb.auth.getSession();
-    if(!session) showAuthScreen();
-  }catch(e){
-    showAuthScreen();
-  }
 }
 
 // ═══════════════════════════════════════
@@ -1880,55 +1929,67 @@ function addNotifMenuItem(){
 // BOOT
 // ═══════════════════════════════════════
 async function boot(){
-  dark=localStorage.getItem(TK)==='dark';
+  dark = localStorage.getItem(TK)==='dark';
   applyTheme();
   await registerSW();
 
-  sb.auth.onAuthStateChange(async(event,session)=>{
+  // ── Função central que inicia sessão ──
+  async function startSession(user){
+    if(appBooted) return; // evita duplo boot
+    currentUser = user;
+    updateUserBadge(user);
+    showLoading();
+    await sbLoadAll();
+    bootApp();
+  }
+
+  // ── Escuta mudanças de auth ──
+  sb.auth.onAuthStateChange(async(event, session)=>{
+    console.log('authStateChange:', event, !!session);
     try{
-      if(event==='SIGNED_IN'||event==='TOKEN_REFRESHED'||event==='INITIAL_SESSION'){
-        if(!session){ showAuthScreen(); return; }
-        currentUser=session.user;
-        showLoading();
-        updateUserBadge(currentUser);
-        await sbLoadAll();
-        applyTheme();
-        applyRecur();
-        cur=todayStr();upDayNav();render();checkPending();
-        updFocusUI();upFocusTotalDisp();
-        subscribeRealtime();
-        showApp();
-        addNotifMenuItem();
-        scheduleAllNotifs();
-        if(!localStorage.getItem('notifDismissed') && Notification.permission==='default'){
-          setTimeout(showNotifBanner, 3000);
-        }
+      if((event==='SIGNED_IN'||event==='TOKEN_REFRESHED'||event==='INITIAL_SESSION') && session){
+        await startSession(session.user);
       } else if(event==='SIGNED_OUT'){
-        currentUser=null;
+        appBooted = false;
+        currentUser = null;
         cancelAllNotifs();
-        if(realtimeSub){sb.removeChannel(realtimeSub);realtimeSub=null;}
+        if(realtimeSub){ sb.removeChannel(realtimeSub); realtimeSub=null; }
         showAuthScreen();
       } else if(event==='PASSWORD_RECOVERY'){
         showAuthScreen();
         setAuthMsg('Defina sua nova senha após entrar na conta.',false);
+      } else if(event==='INITIAL_SESSION' && !session){
+        // Sem sessão salva → mostra login
+        showAuthScreen();
       }
     }catch(err){
-      console.error('boot error:',err);
-      tasks=lsLoadTasks().map(t=>({priority:'none',recur:'none',_open:false,...t}));
-      totalFocusSecs=lsLoadGarden();
-      dark=localStorage.getItem(TK)==='dark';
-      applyTheme();applyRecur();
-      cur=todayStr();upDayNav();render();checkPending();
-      updFocusUI();upFocusTotalDisp();
-      showApp();
-      scheduleAllNotifs();
+      console.error('auth state error:', err);
+      // Fallback: mostra app com dados locais
+      if(!appBooted && currentUser){
+        tasks = lsLoadTasks().map(t=>({priority:'none',recur:'none',_open:false,...t}));
+        totalFocusSecs = lsLoadGarden();
+        dark = localStorage.getItem(TK)==='dark';
+        bootApp();
+      } else if(!currentUser){
+        showAuthScreen();
+      }
     }
   });
 
+  // ── Verifica sessão existente agora (fallback para Safari iOS) ──
+  // O onAuthStateChange às vezes não dispara INITIAL_SESSION no Safari PWA
   try{
-    const{data:{session}}=await sb.auth.getSession();
-    if(!session) showAuthScreen();
-  }catch(e){ showAuthScreen(); }
+    const { data:{ session } } = await sb.auth.getSession();
+    if(session && !appBooted){
+      // Sessão existe mas o evento não disparou — inicia manualmente
+      await startSession(session.user);
+    } else if(!session && !appBooted){
+      showAuthScreen();
+    }
+  }catch(e){
+    console.error('getSession error:', e);
+    showAuthScreen();
+  }
 }
 
 boot();</script>
