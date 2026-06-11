@@ -829,15 +829,18 @@ function lsSaveTasks(){
   if(tasks.length > 0) saveBackup();
 }
 
-// Backup com timestamp — mantém 3 snapshots diários
+// Backup com timestamp — mantém 7 snapshots diários
 function saveBackup(){
   try{
     const today = todayStr();
     const bk = getBackups();
     bk[today] = { tasks: JSON.parse(JSON.stringify(tasks)), ts: Date.now() };
-    // Remove backups com mais de 3 dias
+    // Remove backups com mais de 7 dias — só remove 1 chave por vez (bug fix: era shift() duplo)
     const keys = Object.keys(bk).sort();
-    while(keys.length > 3){ delete bk[keys.shift()]; keys.shift(); }
+    while(keys.length > 7){ 
+      const oldest = keys.shift(); // remove apenas a mais antiga
+      delete bk[oldest]; 
+    }
     localStorage.setItem(LS_BACKUP, JSON.stringify(bk));
   }catch(e){ console.warn('saveBackup error', e); }
 }
@@ -1058,20 +1061,27 @@ function sbSaveTheme(){
 function subscribeRealtime(){
   if(realtimeSub) sb.removeChannel(realtimeSub);
   if(!currentUser) return;
-  realtimeSub=sb.channel('tasks-'+currentUser.id)
+  realtimeSub = sb.channel('tasks-'+currentUser.id)
     .on('postgres_changes',
-      {event:'*',schema:'public',table:'tasks',filter:`user_id=eq.${currentUser.id}`},
+      {event:'*', schema:'public', table:'tasks', filter:`user_id=eq.${currentUser.id}`},
       payload=>{
-        const{eventType,new:nw,old:ol}=payload;
-        if(eventType==='INSERT'||eventType==='UPDATE'){
-          const t=rowToTask(nw);
-          const idx=tasks.findIndex(x=>x.id===t.id);
-          if(idx>=0){tasks[idx]={...tasks[idx],...t,_open:tasks[idx]._open};}
-          else{tasks.push(t);}
+        const{eventType, new:nw, old:ol} = payload;
+        if(eventType==='INSERT' || eventType==='UPDATE'){
+          const t = rowToTask(nw);
+          const idx = tasks.findIndex(x=>x.id===t.id);
+          if(idx>=0){ tasks[idx]={...tasks[idx],...t,_open:tasks[idx]._open}; }
+          else { tasks.push(t); }
         } else if(eventType==='DELETE'){
-          tasks=tasks.filter(x=>x.id!==ol.id);
+          // PROTEÇÃO: nunca deixa a lista ficar vazia por evento remoto isolado
+          const after = tasks.filter(x=>x.id!==ol.id);
+          if(after.length === 0 && tasks.length > 1){
+            // Suspeito — ignora evento que zeraria tudo
+            console.warn('Realtime DELETE ignorado: zeraria lista completa. id=',ol.id);
+            return;
+          }
+          tasks = after;
         }
-        lsSaveTasks();saveH();render();
+        lsSaveTasks(); saveH(); render();
       }
     ).subscribe();
 }
@@ -1107,13 +1117,25 @@ async function sendMagicLink(){
 // ═══════════════════════════════════════
 // ONLINE/OFFLINE
 // ═══════════════════════════════════════
-window.addEventListener('online',async()=>{
-  isOnline=true;setOffline(false);
-  if(currentUser){
-    // Sync local pending changes up
+window.addEventListener('online', async()=>{
+  isOnline = true; setOffline(false);
+  // Só sincroniza se o app já terminou de carregar E há tarefas
+  // Nunca sincroniza lista vazia ao reconectar
+  if(currentUser && appBooted && tasks.length > 0){
     await sbSaveAllTasks();
     await sbFlushGarden();
     notify('🌐','Conexão restaurada — dados sincronizados!');
+  } else if(currentUser && appBooted && tasks.length === 0){
+    // Sem tarefas locais — recarrega do Supabase em vez de enviar vazio
+    notify('🌐','Conexão restaurada — verificando dados…');
+    const{data:rows} = await sb.from('tasks')
+      .select('*').eq('user_id',currentUser.id).order('sort_order').order('created_at');
+    if(rows && rows.length > 0){
+      tasks = rows.map(rowToTask);
+      lsSaveTasks();
+      render();
+      notify('✅','Dados restaurados do servidor!');
+    }
   }
 });
 window.addEventListener('offline',()=>{isOnline=false;setOffline(true);notify('📡','Sem internet — salvando localmente');});
@@ -1310,11 +1332,15 @@ function addTask(){
 function resetF(){nP='none';nR='none';document.querySelectorAll('#nPrioGrp .pc').forEach(x=>x.className='pc');document.querySelectorAll('#nRecurGrp .ro').forEach(x=>x.classList.remove('on'));document.getElementById('nCat').value='';document.getElementById('nStart').value='';document.getElementById('nEnd').value='';}
 document.querySelectorAll('.fc').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.fc').forEach(x=>x.classList.remove('active'));b.classList.add('active');filt=b.dataset.f;render();}));
 document.getElementById('clearDone').addEventListener('click',()=>{
-  const toDelete=tasks.filter(t=>t.done&&t.date===cur).map(t=>t.id);
-  tasks=tasks.filter(t=>!(t.done&&t.date===cur));
-  lsSaveTasks();saveH();render();
-  toDelete.forEach(id=>sbDeleteTask(id));
-  notify('🗑',`${toDelete.length} removida(s)`);
+  const toDelete = tasks.filter(t=>t.done && t.date===cur);
+  if(!toDelete.length){ notify('ℹ️','Nenhuma tarefa concluída hoje.'); return; }
+  // Confirmação antes de deletar
+  if(!confirm(`Remover ${toDelete.length} tarefa${toDelete.length!==1?'s':''} concluída${toDelete.length!==1?'s':''}? Esta ação não pode ser desfeita.`)) return;
+  const ids = toDelete.map(t=>t.id);
+  tasks = tasks.filter(t=>!(t.done && t.date===cur));
+  lsSaveTasks(); saveH(); render();
+  ids.forEach(id=>sbDeleteTask(id));
+  notify('🗑',`${ids.length} removida(s)`);
 });
 
 // ═══════════════════════════════════════
@@ -2137,25 +2163,66 @@ function addNotifMenuItem(){
   const dropdown = document.getElementById('userDropdown');
   if(!dropdown || document.getElementById('notifMenuItem')) return;
 
+  // ── Item de notificações ──
   const item = document.createElement('button');
   item.id = 'notifMenuItem';
   item.style.cssText = 'width:100%;padding:10px 14px;background:none;border:none;border-top:1px solid var(--border);text-align:left;font-size:13px;color:var(--text2);cursor:pointer;font-family:var(--font);display:flex;align-items:center;gap:7px;';
   item.innerHTML = `🔔 <span id="notifMenuLabel">${Notification.permission==='granted'?'Lembretes ativos ✓':'Ativar lembretes'}</span>`;
-  item.onclick = async() => {
+  item.onclick = async()=>{
     toggleUserDropdown();
-    if(Notification.permission === 'granted'){
-      notify('🔔','Lembretes já estão ativos!');
-    } else {
+    if(Notification.permission==='granted'){ notify('🔔','Lembretes já estão ativos!'); }
+    else{
       await requestNotifPermission();
       const label = document.getElementById('notifMenuLabel');
       if(label) label.textContent = Notification.permission==='granted'?'Lembretes ativos ✓':'Ativar lembretes';
     }
   };
 
-  // Insere antes do botão de sair
+  // ── Item de diagnóstico ──
+  const diagItem = document.createElement('button');
+  diagItem.id = 'diagMenuItem';
+  diagItem.style.cssText = 'width:100%;padding:10px 14px;background:none;border:none;border-top:1px solid var(--border);text-align:left;font-size:13px;color:var(--text2);cursor:pointer;font-family:var(--font);display:flex;align-items:center;gap:7px;';
+  diagItem.innerHTML = '🔍 Diagnóstico de dados';
+  diagItem.onclick = ()=>{ toggleUserDropdown(); showDiagnostic(); };
+
   const logoutBtn = dropdown.querySelector('button');
-  if(logoutBtn) dropdown.insertBefore(item, logoutBtn);
-  else dropdown.appendChild(item);
+  if(logoutBtn){
+    dropdown.insertBefore(item, logoutBtn);
+    dropdown.insertBefore(diagItem, logoutBtn);
+  } else {
+    dropdown.appendChild(item);
+    dropdown.appendChild(diagItem);
+  }
+}
+
+// Mostra estado atual dos dados para debug
+async function showDiagnostic(){
+  const bk = getBackups();
+  const bkDates = Object.keys(bk).sort().reverse();
+  const bkInfo = bkDates.map(d=>`  ${d}: ${bk[d]?.tasks?.length||0} tarefas`).join('\n') || '  (vazio)';
+  
+  let sbCount = '?';
+  try{
+    const{count} = await sb.from('tasks').select('*',{count:'exact',head:true}).eq('user_id',currentUser?.id||'');
+    sbCount = count ?? '?';
+  }catch(e){ sbCount = 'erro'; }
+
+  const msg = [
+    `📊 DIAGNÓSTICO DAYFLOW`,
+    ``,
+    `Tarefas em memória: ${tasks.length}`,
+    `Tarefas no Supabase: ${sbCount}`,
+    `Cache localStorage: ${lsLoadTasks().length}`,
+    ``,
+    `Backups disponíveis:`,
+    bkInfo,
+    ``,
+    `App iniciado: ${appBooted ? 'sim' : 'não'}`,
+    `Online: ${isOnline ? 'sim' : 'não'}`,
+    `Usuário: ${currentUser?.email || 'não logado'}`,
+  ].join('\n');
+
+  alert(msg);
 }
 
 // ═══════════════════════════════════════
