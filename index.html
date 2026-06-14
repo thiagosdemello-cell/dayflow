@@ -853,115 +853,73 @@ function showSync(on){document.getElementById('syncBar').style.display=on?'block
 function setOffline(v){document.getElementById('offlineBadge').classList.toggle('show',v);}
 
 // ═══════════════════════════════════════
-// LOCAL STORAGE (fallback + cache + backup diário)
+// PERSISTÊNCIA — Supabase é a única fonte da verdade
+//
+// REGRAS:
+// 1. localStorage = cache de LEITURA apenas (mostrar enquanto carrega)
+//    Nunca é usado para escrever de volta ao Supabase
+// 2. Toda alteração vai DIRETO ao Supabase, sem passar pelo localStorage
+// 3. localStorage só é atualizado APÓS confirmar que Supabase salvou
+// 4. Boot com erro no Supabase → mostra erro, NÃO carrega estado vazio
 // ═══════════════════════════════════════
-const LS_TASKS  = 'df_tasks_'  + SUPABASE_URL;
-const LS_GARDEN = 'df_garden_' + SUPABASE_URL;
-const LS_HIST   = 'df_hist_v3';
-const LS_BACKUP = 'df_backup_' + SUPABASE_URL; // backup diário com timestamp
 
-// Salva tarefas — nunca sobrescreve com lista vazia
-function lsSaveTasks(){
-  if(tasks.length === 0){
-    const existing = localStorage.getItem(LS_TASKS);
-    if(existing && existing !== '[]'){
-      console.warn('lsSaveTasks: ignorando save vazio, há dados no cache');
-      return;
-    }
-  }
-  localStorage.setItem(LS_TASKS, JSON.stringify(tasks));
-  // Salva backup diário (mantém os últimos 3 dias)
-  if(tasks.length > 0) saveBackup();
-}
+// Chaves localStorage — apenas cache de leitura + histórico
+const LS_CACHE = 'df_cache_' + SUPABASE_URL;  // cache temporário (leitura)
+const LS_HIST  = 'df_hist_v4';                 // histórico de dias (append-only)
+const LS_PREFS = 'df_prefs';                   // tema e preferências
 
-// Backup com timestamp — mantém 7 snapshots diários
-function saveBackup(){
-  try{
-    const today = todayStr();
-    const bk = getBackups();
-    bk[today] = { tasks: JSON.parse(JSON.stringify(tasks)), ts: Date.now() };
-    // Remove backups com mais de 7 dias — só remove 1 chave por vez (bug fix: era shift() duplo)
-    const keys = Object.keys(bk).sort();
-    while(keys.length > 7){ 
-      const oldest = keys.shift(); // remove apenas a mais antiga
-      delete bk[oldest]; 
-    }
-    localStorage.setItem(LS_BACKUP, JSON.stringify(bk));
-  }catch(e){ console.warn('saveBackup error', e); }
-}
+// ── Cache somente-leitura ──
+// Só salva no cache DEPOIS que o Supabase confirmou o dado
+function cacheWrite(data){ try{ localStorage.setItem(LS_CACHE, JSON.stringify(data)); }catch(e){} }
+// cacheWriteNow: atualiza cache com estado atual de tasks (substitui lsSaveTasks)
+// Nunca escreve de volta ao Supabase — só atualiza o espelho local
+function cacheWriteNow(){ if(tasks.length>0) cacheWrite({tasks, ts:Date.now()}); }
+function cacheRead(){ try{ return JSON.parse(localStorage.getItem(LS_CACHE)||'null'); }catch(e){ return null; } }
+function cacheClear(){ try{ localStorage.removeItem(LS_CACHE); }catch(e){} }
 
-function getBackups(){
-  try{ return JSON.parse(localStorage.getItem(LS_BACKUP)||'{}'); }
-  catch(e){ return {}; }
-}
-
-// Retorna o backup mais recente com tarefas (para recuperação)
-function getLatestBackup(){
-  const bk = getBackups();
-  const keys = Object.keys(bk).sort().reverse();
-  for(const k of keys){
-    if(bk[k]?.tasks?.length > 0) return { date: k, tasks: bk[k].tasks };
-  }
-  return null;
-}
-
-function lsLoadTasks(){
-  try{ return JSON.parse(localStorage.getItem(LS_TASKS)||'[]'); }
-  catch(e){ return []; }
-}
-function lsSaveGarden(){localStorage.setItem(LS_GARDEN,String(totalFocusSecs));}
-function lsLoadGarden(){return parseInt(localStorage.getItem(LS_GARDEN)||'0');}
-function getH(){try{return JSON.parse(localStorage.getItem(LS_HIST)||'{}');}catch(e){return{};}}
-
-// Salva snapshot do dia no histórico local + Supabase
-// Chamado sempre que uma tarefa é criada/alterada/concluída
+// ── Histórico — append-only, nunca apaga ──
+function getH(){ try{ return JSON.parse(localStorage.getItem(LS_HIST)||'{}'); }catch(e){ return {}; } }
 function saveH(){
-  const h=getH(), t=todayStr(), td=tasks.filter(x=>x.date===t);
-  const done=td.filter(x=>x.done).length;
-  // Só sobrescreve se há dados reais (evita salvar 0/0 quando tasks ainda não carregou)
-  if(td.length > 0 || h[t]){
-    h[t]={
-      done, total:td.length,
-      pct: td.length ? Math.round(done/td.length*100) : 0,
-      // Salva snapshot completo das tarefas do dia para o Histórico
-      snapshot: td.map(t=>({
-        id:t.id, name:t.name, done:t.done, priority:t.priority,
-        category:t.category, timeStart:t.timeStart, timeEnd:t.timeEnd, desc:t.desc
-      }))
-    };
-    localStorage.setItem(LS_HIST, JSON.stringify(h));
-  }
-}
-
-// Chamado no boot: salva o histórico de TODOS os dias que têm tarefas
-// Garante que ao abrir num dia novo, o dia anterior fica registrado
-function autoSaveHistory(){
+  if(!tasks.length) return; // nunca salva histórico vazio
   const h = getH();
-  // Agrupa todas as tarefas por data
+  // Agrupa por data e salva snapshot de cada dia
   const byDate = {};
   tasks.forEach(t=>{
     if(!byDate[t.date]) byDate[t.date]=[];
     byDate[t.date].push(t);
   });
-  // Para cada dia com tarefas, salva no histórico se ainda não foi salvo ou está desatualizado
   Object.entries(byDate).forEach(([date, dayTasks])=>{
     const done = dayTasks.filter(t=>t.done).length;
     h[date] = {
       done, total: dayTasks.length,
       pct: dayTasks.length ? Math.round(done/dayTasks.length*100) : 0,
       snapshot: dayTasks.map(t=>({
-        id:t.id, name:t.name, done:t.done, priority:t.priority,
-        category:t.category, timeStart:t.timeStart, timeEnd:t.timeEnd, desc:t.desc
+        id:t.id, name:t.name, done:t.done, priority:t.priority||'none',
+        category:t.category||'', timeStart:t.timeStart||'',
+        timeEnd:t.timeEnd||'', desc:t.desc||''
       }))
     };
   });
-  localStorage.setItem(LS_HIST, JSON.stringify(h));
+  try{ localStorage.setItem(LS_HIST, JSON.stringify(h)); }catch(e){}
 }
 
+// Chamado no boot — salva snapshot de todos os dias carregados do Supabase
+function autoSaveHistory(){
+  if(tasks.length > 0) saveH();
+}
+
+// ── Preferências (tema) ──
+function prefsRead(){ try{ return JSON.parse(localStorage.getItem(LS_PREFS)||'{}'); }catch(e){ return {}; } }
+function prefsWrite(obj){ try{ localStorage.setItem(LS_PREFS, JSON.stringify({...prefsRead(),...obj})); }catch(e){} }
+
+// Garden (segundos de foco) — localStorage + Supabase
+function lsSaveGarden(){ try{ localStorage.setItem('df_garden', String(totalFocusSecs)); }catch(e){} }
+function lsLoadGarden(){ return parseInt(localStorage.getItem('df_garden')||'0'); }
+
 // ═══════════════════════════════════════
-// SUPABASE — row mapper helpers
+// SUPABASE — mappers
 // ═══════════════════════════════════════
-function taskToRow(t,uid){
+function taskToRow(t, uid){
   return{
     id:t.id, user_id:uid, name:t.name, done:t.done,
     date:t.date, priority:t.priority||'none', recur:t.recur||'none',
@@ -981,108 +939,109 @@ function rowToTask(r){
 }
 
 // ═══════════════════════════════════════
-// SUPABASE — LOAD ALL DATA
-// Regras de ouro:
-// 1. Nunca sobrescrever dados existentes com lista vazia
-// 2. bootApp() é chamado UMA vez, no finally, sempre
-// 3. Safety timer cancela a si mesmo se sbLoadAll terminar antes
-// 4. Se Supabase vazio mas backup existe → restaura backup
+// SUPABASE — LOAD (fonte da verdade)
+// Nunca usa localStorage como fallback para escrever de volta
 // ═══════════════════════════════════════
 let appBooted = false;
-let _bootAppCalled = false; // flag extra para garantir chamada única
+let _bootAppCalled = false;
 
 async function sbLoadAll(){
   if(!currentUser) return;
   showSync(true);
-  let timedOut = false;
 
-  // Safety timer — se Supabase demorar >6s, usa localStorage e inicia app
-  const safetyTimer = setTimeout(()=>{
-    timedOut = true;
-    console.warn('sbLoadAll timeout → localStorage');
-    const cached = lsLoadTasks();
-    if(cached.length > 0){
-      tasks = cached.map(t=>({priority:'none',recur:'none',_open:false,...t}));
-    } else {
-      const bk = getLatestBackup();
-      if(bk) tasks = bk.tasks.map(t=>({priority:'none',recur:'none',_open:false,...t}));
-    }
-    totalFocusSecs = lsLoadGarden();
-    dark = localStorage.getItem(TK)==='dark';
-    showSync(false);
-    _safeBootApp();
-  }, 6000);
+  // Mostra cache enquanto Supabase carrega (só leitura, nunca re-sobe)
+  const cached = cacheRead();
+  if(cached && cached.tasks && cached.tasks.length > 0){
+    tasks = cached.tasks.map(t=>({priority:'none',recur:'none',_open:false,...t}));
+    render(); // renderiza cache imediatamente
+  }
 
   try{
-    // 1. Busca tarefas
+    // 1. Tarefas — fonte da verdade é o Supabase
     const {data:rows, error:tErr} = await sb.from('tasks')
-      .select('*').eq('user_id',currentUser.id)
+      .select('*').eq('user_id', currentUser.id)
       .order('sort_order').order('created_at');
 
-    if(timedOut) return; // safety timer já agiu, não faz mais nada
+    if(tErr) throw new Error('Erro ao carregar tarefas: ' + tErr.message);
 
-    if(tErr && tErr.code !== 'PGRST116') throw tErr;
+    tasks = (rows||[]).map(rowToTask);
 
-    const loaded = (rows||[]).map(rowToTask);
-
-    if(loaded.length > 0){
-      // Supabase tem dados — usa normalmente
-      tasks = loaded;
-      lsSaveTasks(); // também salva backup
-    } else {
-      // Supabase vazio — tenta recuperar de backup ou localStorage
-      const cached = lsLoadTasks();
-      const bk = getLatestBackup();
-      const recovery = (cached.length > 0)
-        ? cached.map(t=>({priority:'none',recur:'none',_open:false,...t}))
-        : bk ? bk.tasks.map(t=>({priority:'none',recur:'none',_open:false,...t})) : [];
-
-      if(recovery.length > 0){
-        console.warn(`Supabase vazio — restaurando ${recovery.length} tarefas do backup local`);
-        tasks = recovery;
-        // Re-sobe para o Supabase
-        const rows2 = tasks.map((t,i)=>taskToRow({...t,_order:i},currentUser.id));
-        await sb.from('tasks').upsert(rows2,{onConflict:'id'});
-        lsSaveTasks();
-        setTimeout(()=>notify('🔄',`${tasks.length} tarefa${tasks.length!==1?'s':''} restaurada${tasks.length!==1?'s':''} do backup!`), 500);
-      } else {
-        tasks = []; // genuinamente vazio (conta nova)
-      }
+    // Atualiza cache APÓS confirmar dados do Supabase
+    if(tasks.length > 0){
+      cacheWrite({ tasks, ts: Date.now() });
     }
 
     // 2. Jardim
     const {data:g} = await sb.from('garden')
-      .select('focus_seconds').eq('user_id',currentUser.id).maybeSingle();
+      .select('focus_seconds').eq('user_id', currentUser.id).maybeSingle();
     totalFocusSecs = g ? (g.focus_seconds||0) : lsLoadGarden();
     lsSaveGarden();
 
     // 3. Tema
     const {data:p} = await sb.from('preferences')
-      .select('theme').eq('user_id',currentUser.id).maybeSingle();
-    if(p){ dark=p.theme==='dark'; localStorage.setItem(TK,p.theme); }
-    else { dark=localStorage.getItem(TK)==='dark'; }
+      .select('theme').eq('user_id', currentUser.id).maybeSingle();
+    if(p){ dark = p.theme==='dark'; prefsWrite({theme: p.theme}); }
+    else { dark = prefsRead().theme==='dark'; }
 
-  }catch(e){
-    if(timedOut) return;
-    console.warn('sbLoadAll erro:', e);
-    // Fallback: localStorage → backup
-    const cached = lsLoadTasks();
-    if(cached.length > 0){
-      tasks = cached.map(t=>({priority:'none',recur:'none',_open:false,...t}));
-    } else {
-      const bk = getLatestBackup();
-      if(bk) tasks = bk.tasks.map(t=>({priority:'none',recur:'none',_open:false,...t}));
-    }
-    totalFocusSecs = lsLoadGarden();
-    dark = localStorage.getItem(TK)==='dark';
-  }finally{
-    clearTimeout(safetyTimer);
     showSync(false);
-    if(!timedOut) _safeBootApp();
+    _safeBootApp();
+
+  }catch(err){
+    console.error('sbLoadAll erro:', err);
+    showSync(false);
+
+    // Se há cache válido, usa-o (mas NÃO re-sobe ao Supabase)
+    if(cached && cached.tasks && cached.tasks.length > 0){
+      tasks = cached.tasks.map(t=>({priority:'none',recur:'none',_open:false,...t}));
+      totalFocusSecs = lsLoadGarden();
+      dark = prefsRead().theme==='dark';
+      _safeBootApp();
+      // Avisa que está em modo offline/cache
+      setTimeout(()=> notify('⚠️','Carregando do cache — dados podem estar desatualizados'), 500);
+    } else {
+      // Sem cache E sem Supabase — mostra erro em vez de estado vazio
+      showSync(false);
+      _showLoadError(err.message);
+    }
   }
 }
 
-// Garante que bootApp() é chamado exatamente uma vez
+// Mostra erro de carregamento sem entrar no app com estado vazio
+function _showLoadError(msg){
+  document.getElementById('authLoading').innerHTML = `
+    <div style="text-align:center;padding:20px;">
+      <div style="font-size:36px;margin-bottom:12px;">⚠️</div>
+      <div style="font-size:15px;font-weight:500;color:var(--text);margin-bottom:8px;">Erro ao carregar dados</div>
+      <div style="font-size:13px;color:var(--text2);margin-bottom:20px;line-height:1.5;">${escHtml(msg)}<br><br>Verifique sua conexão e tente novamente.</div>
+      <button class="btn btn-a" onclick="location.reload()" style="margin:0 auto;display:flex;">🔄 Tentar novamente</button>
+      <button class="btn" onclick="_loadFromCacheEmergency()" style="margin:8px auto 0;display:flex;">📦 Usar dados offline</button>
+    </div>`;
+  document.getElementById('authOverlay').style.display='flex';
+}
+
+// Emergência: carrega do cache sem re-subir ao Supabase
+function _loadFromCacheEmergency(){
+  const cached = cacheRead();
+  const h = getH();
+  // Tenta reconstruir tasks do histórico se cache vazio
+  if((!cached || !cached.tasks || !cached.tasks.length)){
+    // Reconstrói do histórico
+    const allTasks = [];
+    Object.values(h).forEach(day=>{
+      if(day.snapshot) allTasks.push(...day.snapshot);
+    });
+    if(allTasks.length > 0){
+      tasks = allTasks.map(t=>({priority:'none',recur:'none',_open:false,...t}));
+    }
+  } else {
+    tasks = cached.tasks.map(t=>({priority:'none',recur:'none',_open:false,...t}));
+  }
+  totalFocusSecs = lsLoadGarden();
+  dark = prefsRead().theme==='dark';
+  _safeBootApp();
+  setTimeout(()=> notify('📦','Modo offline — alterações serão sincronizadas ao reconectar'), 500);
+}
+
 function _safeBootApp(){
   if(_bootAppCalled) return;
   _bootAppCalled = true;
@@ -1098,7 +1057,7 @@ function bootApp(){
   upDayNav();
   render();
   checkPending();
-  autoSaveHistory(); // ← salva histórico do dia anterior ao iniciar
+  autoSaveHistory();
   updFocusUI();
   upFocusTotalDisp();
   subscribeRealtime();
@@ -1111,66 +1070,100 @@ function bootApp(){
 }
 
 // ═══════════════════════════════════════
-// SUPABASE — SAVE TASK (upsert, debounced)
+// SUPABASE — SAVE (direto, sem localStorage como intermediário)
 // ═══════════════════════════════════════
+
+// Salva uma tarefa direto no Supabase + atualiza cache APÓS confirmação
 function sbSaveTask(task){
-  if(!currentUser||!isOnline) return;
+  if(!currentUser) return;
   clearTimeout(saveDebounce[task.id]);
-  saveDebounce[task.id]=setTimeout(async()=>{
-    const row=taskToRow(task,currentUser.id);
-    const{error}=await sb.from('tasks').upsert(row,{onConflict:'id'});
-    if(error) console.warn('sbSaveTask error',error);
-  },400);
+  saveDebounce[task.id] = setTimeout(async()=>{
+    if(!isOnline){ pendingWrites.set(task.id, {type:'upsert', task}); return; }
+    const row = taskToRow(task, currentUser.id);
+    const {error} = await sb.from('tasks').upsert(row, {onConflict:'id'});
+    if(error){ console.warn('sbSaveTask error', error); pendingWrites.set(task.id, {type:'upsert', task}); }
+    else { cacheWrite({tasks, ts: Date.now()}); saveH(); }
+  }, 300);
 }
 
 function sbDeleteTask(taskId){
-  if(!currentUser||!isOnline) return;
-  sb.from('tasks').delete().eq('id',taskId).eq('user_id',currentUser.id)
-    .then(({error})=>{if(error)console.warn('sbDeleteTask',error);});
+  if(!currentUser) return;
+  if(!isOnline){ pendingWrites.set(taskId, {type:'delete', id:taskId}); return; }
+  sb.from('tasks').delete().eq('id', taskId).eq('user_id', currentUser.id)
+    .then(({error})=>{
+      if(error){ console.warn('sbDeleteTask', error); pendingWrites.set(taskId, {type:'delete', id:taskId}); }
+      else { cacheWrite({tasks, ts: Date.now()}); saveH(); }
+    });
 }
 
-async function sbSaveAllTasks(){
-  // PROTEÇÃO: nunca sobrescreve com lista vazia se há dados no banco
-  if(!currentUser||!isOnline) return;
-  if(!tasks.length){
-    // Verifica se tem dados no banco antes de não fazer nada
-    console.warn('sbSaveAllTasks: tasks vazio, ignorando para evitar perda de dados');
-    return;
+// Salva ordem após drag-and-drop
+async function sbSaveOrder(){
+  if(!currentUser || !isOnline || !tasks.length) return;
+  const rows = tasks.map((t,i)=>taskToRow({...t,_order:i}, currentUser.id));
+  const {error} = await sb.from('tasks').upsert(rows, {onConflict:'id'});
+  if(!error){ cacheWrite({tasks, ts: Date.now()}); }
+  else { console.warn('sbSaveOrder error', error); }
+}
+
+// ═══════════════════════════════════════
+// PENDING WRITES — fila offline
+// Quando offline, guarda operações e executa ao reconectar
+// ═══════════════════════════════════════
+const pendingWrites = new Map();
+
+async function flushPendingWrites(){
+  if(!pendingWrites.size || !currentUser || !isOnline) return;
+  console.log(`Flushing ${pendingWrites.size} pending writes`);
+  for(const [id, op] of pendingWrites.entries()){
+    try{
+      if(op.type==='upsert'){
+        const row = taskToRow(op.task, currentUser.id);
+        await sb.from('tasks').upsert(row, {onConflict:'id'});
+      } else if(op.type==='delete'){
+        await sb.from('tasks').delete().eq('id', op.id).eq('user_id', currentUser.id);
+      }
+      pendingWrites.delete(id);
+    }catch(e){ console.warn('flushPendingWrites error', e); }
   }
-  const rows=tasks.map((t,i)=>taskToRow({...t,_order:i},currentUser.id));
-  const{error}=await sb.from('tasks').upsert(rows,{onConflict:'id'});
-  if(error) console.warn('sbSaveAllTasks',error);
+  if(pendingWrites.size === 0){
+    cacheWrite({tasks, ts: Date.now()});
+    saveH();
+    notify('🌐','Dados sincronizados com o servidor!');
+  }
 }
 
 // ═══════════════════════════════════════
-// SUPABASE — GARDEN
+// GARDEN
 // ═══════════════════════════════════════
-let gardenFlushTO=null;
+let gardenFlushTO = null;
 function sbFlushGarden(){
-  if(!currentUser||!isOnline) return;
+  lsSaveGarden();
+  if(!currentUser || !isOnline) return;
   clearTimeout(gardenFlushTO);
-  gardenFlushTO=setTimeout(async()=>{
-    const{error}=await sb.from('garden').upsert(
-      {user_id:currentUser.id,focus_seconds:totalFocusSecs},
+  gardenFlushTO = setTimeout(async()=>{
+    const {error} = await sb.from('garden').upsert(
+      {user_id: currentUser.id, focus_seconds: totalFocusSecs},
       {onConflict:'user_id'}
     );
-    if(error) console.warn('sbFlushGarden',error);
-  },2000);
+    if(error) console.warn('sbFlushGarden', error);
+  }, 2000);
 }
+function saveGarden(){ sbFlushGarden(); }
 
 // ═══════════════════════════════════════
-// SUPABASE — THEME
+// THEME
 // ═══════════════════════════════════════
 function sbSaveTheme(){
-  if(!currentUser||!isOnline) return;
+  prefsWrite({theme: dark?'dark':'light'});
+  if(!currentUser || !isOnline) return;
   sb.from('preferences').upsert(
-    {user_id:currentUser.id,theme:dark?'dark':'light'},
+    {user_id: currentUser.id, theme: dark?'dark':'light'},
     {onConflict:'user_id'}
-  ).then(({error})=>{if(error)console.warn('sbSaveTheme',error);});
+  ).then(({error})=>{ if(error) console.warn('sbSaveTheme', error); });
 }
 
 // ═══════════════════════════════════════
-// SUPABASE — REALTIME subscription
+// REALTIME
 // ═══════════════════════════════════════
 function subscribeRealtime(){
   if(realtimeSub) sb.removeChannel(realtimeSub);
@@ -1179,80 +1172,51 @@ function subscribeRealtime(){
     .on('postgres_changes',
       {event:'*', schema:'public', table:'tasks', filter:`user_id=eq.${currentUser.id}`},
       payload=>{
-        const{eventType, new:nw, old:ol} = payload;
+        const {eventType, new:nw, old:ol} = payload;
         if(eventType==='INSERT' || eventType==='UPDATE'){
           const t = rowToTask(nw);
           const idx = tasks.findIndex(x=>x.id===t.id);
           if(idx>=0){ tasks[idx]={...tasks[idx],...t,_open:tasks[idx]._open}; }
           else { tasks.push(t); }
         } else if(eventType==='DELETE'){
-          // PROTEÇÃO: nunca deixa a lista ficar vazia por evento remoto isolado
           const after = tasks.filter(x=>x.id!==ol.id);
-          if(after.length === 0 && tasks.length > 1){
-            // Suspeito — ignora evento que zeraria tudo
-            console.warn('Realtime DELETE ignorado: zeraria lista completa. id=',ol.id);
+          // Ignora DELETE que zeraria lista inteira (proteção anti-bug)
+          if(after.length===0 && tasks.length>1){
+            console.warn('Realtime DELETE suspeito ignorado — zeraria lista. id=', ol.id);
             return;
           }
           tasks = after;
         }
-        lsSaveTasks(); saveH(); render();
+        // Atualiza cache e histórico após evento remoto
+        if(tasks.length > 0) cacheWrite({tasks, ts: Date.now()});
+        saveH(); render();
       }
     ).subscribe();
 }
 
 // ═══════════════════════════════════════
-// SAVE DATA — local + supabase
+// SAVE DATA — ponto único de salvamento
 // ═══════════════════════════════════════
-function saveData(modifiedTask,deletedId){
-  lsSaveTasks(); saveH();
+function saveData(modifiedTask, deletedId){
+  // Não salva no localStorage — vai direto ao Supabase
   if(modifiedTask) sbSaveTask(modifiedTask);
-  if(deletedId) sbDeleteTask(deletedId);
-}
-function saveGarden(){lsSaveGarden();sbFlushGarden();}
-
-// ═══════════════════════════════════════
-// AUTH
-// ═══════════════════════════════════════
-async function sendMagicLink(){
-  const email=document.getElementById('authEmail').value.trim();
-  if(!email){document.getElementById('authMsg').textContent='Digite seu e-mail.';return;}
-  document.getElementById('authMsg').textContent='Enviando…';
-  const{error}=await sb.auth.signInWithOtp({
-    email,
-    options:{emailRedirectTo:window.location.href}
-  });
-  if(error){document.getElementById('authMsg').textContent='Erro: '+error.message;return;}
-  document.getElementById('authEmailStep').style.display='none';
-  document.getElementById('authSentStep').style.display='block';
-  document.getElementById('authMsg').textContent='';
+  if(deletedId)    sbDeleteTask(deletedId);
 }
 
-
 // ═══════════════════════════════════════
-// ONLINE/OFFLINE
+// ONLINE / OFFLINE
 // ═══════════════════════════════════════
 window.addEventListener('online', async()=>{
   isOnline = true; setOffline(false);
-  // Só sincroniza se o app já terminou de carregar E há tarefas
-  // Nunca sincroniza lista vazia ao reconectar
-  if(currentUser && appBooted && tasks.length > 0){
-    await sbSaveAllTasks();
-    await sbFlushGarden();
-    notify('🌐','Conexão restaurada — dados sincronizados!');
-  } else if(currentUser && appBooted && tasks.length === 0){
-    // Sem tarefas locais — recarrega do Supabase em vez de enviar vazio
-    notify('🌐','Conexão restaurada — verificando dados…');
-    const{data:rows} = await sb.from('tasks')
-      .select('*').eq('user_id',currentUser.id).order('sort_order').order('created_at');
-    if(rows && rows.length > 0){
-      tasks = rows.map(rowToTask);
-      lsSaveTasks();
-      render();
-      notify('✅','Dados restaurados do servidor!');
-    }
+  if(currentUser && appBooted){
+    await flushPendingWrites();
+    if(!pendingWrites.size) notify('🌐','Conexão restaurada!');
   }
 });
-window.addEventListener('offline',()=>{isOnline=false;setOffline(true);notify('📡','Sem internet — salvando localmente');});
+window.addEventListener('offline',()=>{
+  isOnline = false; setOffline(true);
+  notify('📡','Sem internet — alterações serão salvas ao reconectar');
+});
 
 // ═══════════════════════════════════════
 // THEME
@@ -1264,7 +1228,7 @@ function applyTheme(){
   document.getElementById('themeIco').textContent=dark?'☀️':'🌙';
   document.body.style.background=dark?'#0F0F0E':'#F6F5F1';
   document.body.style.color=dark?'#EDEAE4':'#1C1B18';
-  localStorage.setItem(TK,dark?'dark':'light');
+  prefsWrite({theme:dark?'dark':'light'});
   sbSaveTheme();
   if(document.getElementById('view-stats').classList.contains('active'))renderStats();
 }
@@ -1306,7 +1270,7 @@ document.getElementById('importConfirm').addEventListener('click',()=>{
       n++;
     }
   });
-  lsSaveTasks();saveH();render();
+  cacheWriteNow();render();
   document.getElementById('importBanner').classList.remove('show');
   notify('📥',`${n} tarefa${n>1?'s':''} importada${n>1?'s':''}!`);
 });
@@ -1400,7 +1364,7 @@ function mkCard(t){
     const cb=e.target.closest('[data-cb]'),ex=e.target.closest('[data-expand]'),dl=e.target.closest('[data-del]'),fo=e.target.closest('[data-focus]'),pr=e.target.closest('[data-prio]'),re=e.target.closest('[data-recur]');
     if(cb){const t2=fT(cb.dataset.cb);if(t2){t2.done=!t2.done;saveData(t2);if(t2.done)cancelTaskNotif(t2.id);else scheduleTaskNotif(t2);render();if(t2.done)notify('✅','Tarefa concluída!');}}
     else if(dl){const id=dl.dataset.del;cancelTaskNotif(id);tasks=tasks.filter(x=>x.id!==id);saveData(null,id);render();notify('🗑','Removida');}
-    else if(ex){const t2=fT(ex.dataset.expand);if(t2){t2._open=!t2._open;lsSaveTasks();render();}}
+    else if(ex){const t2=fT(ex.dataset.expand);if(t2){t2._open=!t2._open;cacheWriteNow();render();}}
     else if(fo){openFocus(fo.dataset.focus);}
     else if(pr){const t2=fT(pr.dataset.tid);if(t2){t2.priority=t2.priority===pr.dataset.prio?'none':pr.dataset.prio;saveData(t2);render();}}
     else if(re){const t2=fT(re.dataset.tid);if(t2){t2.recur=t2.recur===re.dataset.recur?'none':re.dataset.recur;saveData(t2);render();}}
@@ -1452,7 +1416,7 @@ document.getElementById('clearDone').addEventListener('click',()=>{
   if(!confirm(`Remover ${toDelete.length} tarefa${toDelete.length!==1?'s':''} concluída${toDelete.length!==1?'s':''}? Esta ação não pode ser desfeita.`)) return;
   const ids = toDelete.map(t=>t.id);
   tasks = tasks.filter(t=>!(t.done && t.date===cur));
-  lsSaveTasks(); saveH(); render();
+  cacheWriteNow(); saveH(); render();
   ids.forEach(id=>sbDeleteTask(id));
   notify('🗑',`${ids.length} removida(s)`);
 });
@@ -1479,7 +1443,7 @@ function bindDrag(){
       e.preventDefault();card.classList.remove('drag-over');
       if(dragSrc&&dragSrc!==card.dataset.id){
         const si=tasks.findIndex(t=>t.id===dragSrc),di=tasks.findIndex(t=>t.id===card.dataset.id);
-        if(si>=0&&di>=0){const[item]=tasks.splice(si,1);tasks.splice(di,0,item);tasks.forEach((t,i)=>t._order=i);lsSaveTasks();render();sbSaveAllTasks();}
+        if(si>=0&&di>=0){const[item]=tasks.splice(si,1);tasks.splice(di,0,item);tasks.forEach((t,i)=>t._order=i);cacheWriteNow();render();sbSaveOrder();}
       }
     });
 
@@ -1552,7 +1516,7 @@ function bindDrag(){
           const[item]=tasks.splice(si,1);
           tasks.splice(di,0,item);
           tasks.forEach((t,i)=>t._order=i);
-          lsSaveTasks();render();sbSaveAllTasks();
+          cacheWriteNow();render();sbSaveOrder();
           notify('↕️','Tarefa reordenada!');
         }
       }
@@ -1792,7 +1756,7 @@ function checkPending(){
   document.getElementById('modalMove').onclick=()=>{
     const today=todayStr(),ex=tasks.filter(t=>t.date===today).map(t=>t.name);let n=0;
     yp.forEach(t=>{if(!ex.includes(t.name)){const nt={...t,id:Date.now()+Math.random()+'',date:today,done:false,_open:false,_if:y};tasks.push(nt);sbSaveTask(nt);n++;}});
-    lsSaveTasks();saveH();render();document.getElementById('pendingModal').classList.remove('open');notify('📥',`${n} movida${n>1?'s':''}!`);
+    cacheWriteNow();render();document.getElementById('pendingModal').classList.remove('open');notify('📥',`${n} movida${n>1?'s':''}!`);
   };
   document.getElementById('modalIgnore').onclick=()=>document.getElementById('pendingModal').classList.remove('open');
 }
@@ -1822,7 +1786,7 @@ function applyRecur(){
   if(toAdd.length){
     tasks.push(...toAdd);
     toAdd.forEach(t=>sbSaveTask(t));
-    lsSaveTasks();
+    cacheWriteNow();
     saveH();
   }
 }
@@ -2041,7 +2005,7 @@ function histImportSelected(){
 
   tasks.push(...toAdd);
   toAdd.forEach(t=>sbSaveTask(t));
-  lsSaveTasks(); saveH();
+  cacheWriteNow(); saveH();
 
   histCancelSelect();
 
@@ -2082,7 +2046,7 @@ function histExportToToday(fromDate){
 
   tasks.push(...toAdd);
   toAdd.forEach(t=>sbSaveTask(t));
-  lsSaveTasks(); saveH();
+  cacheWriteNow(); saveH();
 
   cur=today;
   document.querySelectorAll('.nav-btn').forEach(x=>x.classList.remove('active'));
@@ -2418,29 +2382,33 @@ function addNotifMenuItem(){
 
 // Mostra estado atual dos dados para debug
 async function showDiagnostic(){
-  const bk = getBackups();
-  const bkDates = Object.keys(bk).sort().reverse();
-  const bkInfo = bkDates.map(d=>`  ${d}: ${bk[d]?.tasks?.length||0} tarefas`).join('\n') || '  (vazio)';
-  
+  const h = getH();
+  const histDates = Object.keys(h).sort().reverse().slice(0,5);
+  const histInfo = histDates.map(d=>`  ${d}: ${h[d]?.total||0} tarefas (${h[d]?.snapshot?.length||0} no snapshot)`).join('\n') || '  (vazio)';
+  const cached = cacheRead();
+  const pendingCount = pendingWrites ? pendingWrites.size : 0;
+
   let sbCount = '?';
   try{
     const{count} = await sb.from('tasks').select('*',{count:'exact',head:true}).eq('user_id',currentUser?.id||'');
     sbCount = count ?? '?';
-  }catch(e){ sbCount = 'erro'; }
+  }catch(e){ sbCount = 'erro de conexão'; }
 
   const msg = [
     `📊 DIAGNÓSTICO DAYFLOW`,
     ``,
     `Tarefas em memória: ${tasks.length}`,
     `Tarefas no Supabase: ${sbCount}`,
-    `Cache localStorage: ${lsLoadTasks().length}`,
+    `Cache local (leitura): ${cached?.tasks?.length||0} tarefas`,
+    `Cache atualizado: ${cached?.ts ? new Date(cached.ts).toLocaleTimeString('pt-BR') : 'nunca'}`,
+    `Escritas pendentes (offline): ${pendingCount}`,
     ``,
-    `Backups disponíveis:`,
-    bkInfo,
+    `Histórico local (últimos 5 dias):`,
+    histInfo,
     ``,
-    `App iniciado: ${appBooted ? 'sim' : 'não'}`,
-    `Online: ${isOnline ? 'sim' : 'não'}`,
-    `Usuário: ${currentUser?.email || 'não logado'}`,
+    `App iniciado: ${appBooted?'sim':'não'}`,
+    `Online: ${isOnline?'sim':'não'}`,
+    `Usuário: ${currentUser?.email||'não logado'}`,
   ].join('\n');
 
   alert(msg);
@@ -2450,7 +2418,7 @@ async function showDiagnostic(){
 // BOOT
 // ═══════════════════════════════════════
 async function boot(){
-  dark = localStorage.getItem(TK)==='dark';
+  dark = prefsRead().theme==='dark';
   applyTheme();
   await registerSW();
 
@@ -2488,7 +2456,7 @@ async function boot(){
       console.error('auth state error:', err);
       // Fallback: mostra app com dados locais
       if(!appBooted && currentUser){
-        tasks = lsLoadTasks().map(t=>({priority:'none',recur:'none',_open:false,...t}));
+        tasks = (cacheRead()?.tasks||[]).map(t=>({priority:'none',recur:'none',_open:false,...t}));
         totalFocusSecs = lsLoadGarden();
         dark = localStorage.getItem(TK)==='dark';
         bootApp();
