@@ -347,12 +347,36 @@ body{transition:background .2s,color .2s;}
   font-weight:500;
 }
 .hist-export-btn:hover{background:var(--accent);color:#fff;}
+.hist-select-btn{
+  margin-top:10px;margin-left:8px;padding:8px 16px;border-radius:var(--r-sm);
+  border:1px solid var(--border2);background:var(--surface2);color:var(--text2);
+  font-size:13px;cursor:pointer;font-family:var(--font);transition:all .2s;
+  display:inline-flex;align-items:center;gap:6px;font-weight:500;
+}
+.hist-select-btn:hover{background:var(--surface3);color:var(--text);}
 .hist-task-item{
   display:flex;align-items:flex-start;gap:10px;padding:10px 14px;
   border-bottom:1px solid var(--border);transition:background .15s;
+  cursor:default;
 }
 .hist-task-item:last-child{border-bottom:none;}
 .hist-task-item:hover{background:var(--surface2);}
+/* Selectable mode */
+.hist-task-item.selectable{cursor:pointer;}
+.hist-task-item.selectable:hover{background:var(--accent-s);}
+.hist-task-item.selected{background:var(--accent-s);border-left:3px solid var(--accent);}
+.hist-sel-check{
+  width:20px;height:20px;border-radius:4px;border:2px solid var(--border2);
+  display:flex;align-items:center;justify-content:center;flex-shrink:0;
+  margin-top:1px;transition:all .2s;background:transparent;
+}
+.hist-task-item.selected .hist-sel-check{background:var(--accent);border-color:var(--accent);}
+.hist-sel-check::after{
+  content:'';display:none;width:5px;height:9px;
+  border:2px solid #fff;border-top:none;border-left:none;
+  transform:rotate(45deg) translateY(-1px);
+}
+.hist-task-item.selected .hist-sel-check::after{display:block;}
 .hist-check{font-size:16px;flex-shrink:0;margin-top:1px;}
 .hist-task-body{flex:1;min-width:0;}
 .hist-task-name{font-size:14px;color:var(--text);}
@@ -367,6 +391,19 @@ body{transition:background .2s,color .2s;}
 .hist-quick-btn.active{background:var(--accent);color:#fff;border-color:var(--accent);}
 .hist-tasks-wrap{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;box-shadow:var(--shadow);}
 .hist-section-label{font-size:10px;color:var(--text3);letter-spacing:.08em;text-transform:uppercase;font-family:var(--mono);padding:10px 14px 6px;background:var(--surface2);}
+/* Selection bar (fixed bottom) */
+.hist-sel-bar{
+  position:fixed;bottom:0;left:68px;right:0;
+  background:var(--surface);border-top:1px solid var(--border2);
+  padding:12px 24px;display:none;align-items:center;gap:12px;
+  box-shadow:0 -4px 20px rgba(0,0,0,.08);z-index:60;
+}
+.hist-sel-bar.show{display:flex;}
+.hist-sel-count{font-size:13px;font-weight:500;color:var(--text);flex:1;}
+.hist-sel-count span{color:var(--accent);}
+@media(max-width:700px){
+  .hist-sel-bar{left:52px;padding:10px 14px;}
+}
 </style>
 <body>
 <div class="layout">
@@ -596,6 +633,14 @@ body{transition:background .2s,color .2s;}
 <!-- PRINT ZONE -->
 <div id="print-zone"></div>
 
+<!-- HISTORY SELECTION BAR (fixed bottom) -->
+<div class="hist-sel-bar" id="histSelBar">
+  <div class="hist-sel-count"><span id="histSelCount">0</span> tarefa(s) selecionada(s)</div>
+  <button class="btn" onclick="histToggleSelectAll()" id="histSelAllBtn" style="font-size:12px;padding:6px 12px;">☑ Selecionar todas</button>
+  <button class="btn" onclick="histCancelSelect()" style="font-size:12px;padding:6px 12px;">✕ Cancelar</button>
+  <button class="btn btn-a" onclick="histImportSelected()" style="font-size:12px;padding:6px 14px;">📥 Importar selecionadas</button>
+</div>
+
 
 <!-- AUTH OVERLAY -->
 <div id="authOverlay" style="position:fixed;inset:0;background:var(--bg);z-index:999;display:flex;align-items:center;justify-content:center;flex-direction:column;padding:24px;">
@@ -759,8 +804,8 @@ body{transition:background .2s,color .2s;}
 // ╔══════════════════════════════════════════════════════╗
 // ║  SUPABASE CONFIG — substitua com suas credenciais   ║
 // ╚══════════════════════════════════════════════════════╝
-const SUPABASE_URL     = 'https://ktldhmnokiehqydqzjbf.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt0bGRobW5va2llaHF5ZHF6amJmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1ODUxOTksImV4cCI6MjA5NDE2MTE5OX0.G9GXAPlnBfofkfH6K90x7vM3zDPrX5EfwHt-Ziijcng';
+const SUPABASE_URL     = 'https://SEU-PROJETO.supabase.co';
+const SUPABASE_ANON_KEY = 'sua-anon-key-aqui';
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -867,10 +912,50 @@ function lsLoadTasks(){
 function lsSaveGarden(){localStorage.setItem(LS_GARDEN,String(totalFocusSecs));}
 function lsLoadGarden(){return parseInt(localStorage.getItem(LS_GARDEN)||'0');}
 function getH(){try{return JSON.parse(localStorage.getItem(LS_HIST)||'{}');}catch(e){return{};}}
+
+// Salva snapshot do dia no histórico local + Supabase
+// Chamado sempre que uma tarefa é criada/alterada/concluída
 function saveH(){
-  const h=getH(),t=todayStr(),td=tasks.filter(x=>x.date===t),done=td.filter(x=>x.done).length;
-  h[t]={done,total:td.length,pct:td.length?Math.round(done/td.length*100):0};
-  localStorage.setItem(LS_HIST,JSON.stringify(h));
+  const h=getH(), t=todayStr(), td=tasks.filter(x=>x.date===t);
+  const done=td.filter(x=>x.done).length;
+  // Só sobrescreve se há dados reais (evita salvar 0/0 quando tasks ainda não carregou)
+  if(td.length > 0 || h[t]){
+    h[t]={
+      done, total:td.length,
+      pct: td.length ? Math.round(done/td.length*100) : 0,
+      // Salva snapshot completo das tarefas do dia para o Histórico
+      snapshot: td.map(t=>({
+        id:t.id, name:t.name, done:t.done, priority:t.priority,
+        category:t.category, timeStart:t.timeStart, timeEnd:t.timeEnd, desc:t.desc
+      }))
+    };
+    localStorage.setItem(LS_HIST, JSON.stringify(h));
+  }
+}
+
+// Chamado no boot: salva o histórico de TODOS os dias que têm tarefas
+// Garante que ao abrir num dia novo, o dia anterior fica registrado
+function autoSaveHistory(){
+  const h = getH();
+  // Agrupa todas as tarefas por data
+  const byDate = {};
+  tasks.forEach(t=>{
+    if(!byDate[t.date]) byDate[t.date]=[];
+    byDate[t.date].push(t);
+  });
+  // Para cada dia com tarefas, salva no histórico se ainda não foi salvo ou está desatualizado
+  Object.entries(byDate).forEach(([date, dayTasks])=>{
+    const done = dayTasks.filter(t=>t.done).length;
+    h[date] = {
+      done, total: dayTasks.length,
+      pct: dayTasks.length ? Math.round(done/dayTasks.length*100) : 0,
+      snapshot: dayTasks.map(t=>({
+        id:t.id, name:t.name, done:t.done, priority:t.priority,
+        category:t.category, timeStart:t.timeStart, timeEnd:t.timeEnd, desc:t.desc
+      }))
+    };
+  });
+  localStorage.setItem(LS_HIST, JSON.stringify(h));
 }
 
 // ═══════════════════════════════════════
@@ -897,85 +982,113 @@ function rowToTask(r){
 
 // ═══════════════════════════════════════
 // SUPABASE — LOAD ALL DATA
+// Regras de ouro:
+// 1. Nunca sobrescrever dados existentes com lista vazia
+// 2. bootApp() é chamado UMA vez, no finally, sempre
+// 3. Safety timer cancela a si mesmo se sbLoadAll terminar antes
+// 4. Se Supabase vazio mas backup existe → restaura backup
 // ═══════════════════════════════════════
 let appBooted = false;
+let _bootAppCalled = false; // flag extra para garantir chamada única
 
 async function sbLoadAll(){
   if(!currentUser) return;
   showSync(true);
+  let timedOut = false;
 
+  // Safety timer — se Supabase demorar >6s, usa localStorage e inicia app
   const safetyTimer = setTimeout(()=>{
-    console.warn('sbLoadAll timeout → fallback localStorage');
-    tasks = lsLoadTasks().map(t=>({priority:'none',recur:'none',_open:false,...t}));
+    timedOut = true;
+    console.warn('sbLoadAll timeout → localStorage');
+    const cached = lsLoadTasks();
+    if(cached.length > 0){
+      tasks = cached.map(t=>({priority:'none',recur:'none',_open:false,...t}));
+    } else {
+      const bk = getLatestBackup();
+      if(bk) tasks = bk.tasks.map(t=>({priority:'none',recur:'none',_open:false,...t}));
+    }
     totalFocusSecs = lsLoadGarden();
     dark = localStorage.getItem(TK)==='dark';
     showSync(false);
-    bootApp();
+    _safeBootApp();
   }, 6000);
 
   try{
-    const{data:rows, error:tErr} = await sb.from('tasks')
-      .select('*').eq('user_id',currentUser.id).order('sort_order').order('created_at');
+    // 1. Busca tarefas
+    const {data:rows, error:tErr} = await sb.from('tasks')
+      .select('*').eq('user_id',currentUser.id)
+      .order('sort_order').order('created_at');
+
+    if(timedOut) return; // safety timer já agiu, não faz mais nada
+
     if(tErr && tErr.code !== 'PGRST116') throw tErr;
 
     const loaded = (rows||[]).map(rowToTask);
 
-    // ── PROTEÇÃO CONTRA PERDA DE DADOS ──
-    // Se o Supabase devolveu lista vazia MAS temos backup local com dados,
-    // NÃO sobrescreve — usa o backup e re-sobe para o Supabase
-    if(loaded.length === 0){
-      const backup = getLatestBackup();
-      if(backup && backup.tasks.length > 0){
-        console.warn(`Supabase vazio mas backup de ${backup.date} tem ${backup.tasks.length} tarefas — restaurando`);
-        tasks = backup.tasks.map(t=>({priority:'none',recur:'none',_open:false,...t}));
-        // Re-sobe o backup para o Supabase
-        setTimeout(async()=>{
-          if(currentUser && isOnline){
-            const rows2 = tasks.map((t,i)=>taskToRow({...t,_order:i},currentUser.id));
-            const{error:e2} = await sb.from('tasks').upsert(rows2,{onConflict:'id'});
-            if(!e2){
-              notify('🔄','Tarefas restauradas do backup!');
-            } else {
-              console.warn('restore upsert error', e2);
-            }
-          }
-        }, 1000);
-      } else {
-        tasks = []; // genuinamente vazio
-      }
-    } else {
+    if(loaded.length > 0){
+      // Supabase tem dados — usa normalmente
       tasks = loaded;
+      lsSaveTasks(); // também salva backup
+    } else {
+      // Supabase vazio — tenta recuperar de backup ou localStorage
+      const cached = lsLoadTasks();
+      const bk = getLatestBackup();
+      const recovery = (cached.length > 0)
+        ? cached.map(t=>({priority:'none',recur:'none',_open:false,...t}))
+        : bk ? bk.tasks.map(t=>({priority:'none',recur:'none',_open:false,...t})) : [];
+
+      if(recovery.length > 0){
+        console.warn(`Supabase vazio — restaurando ${recovery.length} tarefas do backup local`);
+        tasks = recovery;
+        // Re-sobe para o Supabase
+        const rows2 = tasks.map((t,i)=>taskToRow({...t,_order:i},currentUser.id));
+        await sb.from('tasks').upsert(rows2,{onConflict:'id'});
+        lsSaveTasks();
+        setTimeout(()=>notify('🔄',`${tasks.length} tarefa${tasks.length!==1?'s':''} restaurada${tasks.length!==1?'s':''} do backup!`), 500);
+      } else {
+        tasks = []; // genuinamente vazio (conta nova)
+      }
     }
 
-    lsSaveTasks(); // salva (e atualiza backup se tasks.length > 0)
-
-    const{data:g} = await sb.from('garden')
+    // 2. Jardim
+    const {data:g} = await sb.from('garden')
       .select('focus_seconds').eq('user_id',currentUser.id).maybeSingle();
     totalFocusSecs = g ? (g.focus_seconds||0) : lsLoadGarden();
     lsSaveGarden();
 
-    const{data:p} = await sb.from('preferences')
+    // 3. Tema
+    const {data:p} = await sb.from('preferences')
       .select('theme').eq('user_id',currentUser.id).maybeSingle();
     if(p){ dark=p.theme==='dark'; localStorage.setItem(TK,p.theme); }
     else { dark=localStorage.getItem(TK)==='dark'; }
 
   }catch(e){
-    console.warn('sbLoadAll erro → fallback localStorage:', e);
-    tasks = lsLoadTasks().map(t=>({priority:'none',recur:'none',_open:false,...t}));
-    // Se localStorage também vazio, tenta o backup
-    if(tasks.length === 0){
-      const backup = getLatestBackup();
-      if(backup) tasks = backup.tasks.map(t=>({priority:'none',recur:'none',_open:false,...t}));
+    if(timedOut) return;
+    console.warn('sbLoadAll erro:', e);
+    // Fallback: localStorage → backup
+    const cached = lsLoadTasks();
+    if(cached.length > 0){
+      tasks = cached.map(t=>({priority:'none',recur:'none',_open:false,...t}));
+    } else {
+      const bk = getLatestBackup();
+      if(bk) tasks = bk.tasks.map(t=>({priority:'none',recur:'none',_open:false,...t}));
     }
     totalFocusSecs = lsLoadGarden();
     dark = localStorage.getItem(TK)==='dark';
   }finally{
     clearTimeout(safetyTimer);
     showSync(false);
+    if(!timedOut) _safeBootApp();
   }
 }
 
-// Inicializa o app após dados carregados (chamado 1x apenas)
+// Garante que bootApp() é chamado exatamente uma vez
+function _safeBootApp(){
+  if(_bootAppCalled) return;
+  _bootAppCalled = true;
+  bootApp();
+}
+
 function bootApp(){
   if(appBooted) return;
   appBooted = true;
@@ -985,6 +1098,7 @@ function bootApp(){
   upDayNav();
   render();
   checkPending();
+  autoSaveHistory(); // ← salva histórico do dia anterior ao iniciar
   updFocusUI();
   upFocusTotalDisp();
   subscribeRealtime();
@@ -1714,97 +1828,127 @@ function applyRecur(){
 }
 
 // ═══════════════════════════════════════
-// HISTORY VIEW
+// HISTORY VIEW — com seleção individual
 // ═══════════════════════════════════════
 let histSelectedDate = '';
+let histSelectMode   = false;        // true = modo de seleção ativo
+let histSelected     = new Set();    // ids (ou names) das tarefas selecionadas
+let histCurrentTasks = [];           // tarefas do dia atual sendo visualizado
 
 function renderHistory(dateStr){
   histSelectedDate = dateStr || todayStr();
+  histSelectMode   = false;
+  histSelected.clear();
+  _updateSelBar();
+
   const picker = document.getElementById('histDatePicker');
   if(picker) picker.value = histSelectedDate;
 
-  // Atalhos rápidos: últimos 7 dias com tarefas
-  const allDates = [...new Set(tasks.map(t=>t.date))].sort().reverse();
-  const container = document.getElementById('histQuickBtns');
-  if(container){
-    // Últimos 7 dias que têm tarefas
-    const recent = allDates.slice(0,7);
-    container.innerHTML = recent.map(d=>`
+  // Atalhos: todos os dias com tarefas (ao vivo + histórico salvo)
+  const h = getH();
+  const datesLive = [...new Set(tasks.map(t=>t.date))];
+  const datesHist = Object.keys(h).filter(d=>h[d]?.total>0||h[d]?.snapshot?.length>0);
+  const allDates  = [...new Set([...datesLive,...datesHist])].sort().reverse();
+
+  const qb = document.getElementById('histQuickBtns');
+  if(qb){
+    qb.innerHTML = allDates.slice(0,10).map(d=>`
       <button class="hist-quick-btn${d===histSelectedDate?' active':''}"
-        onclick="renderHistory('${d}')">${dayLabel(d)}</button>
-    `).join('');
+        onclick="renderHistory('${d}')">${dayLabel(d)}</button>`).join('');
   }
 
   const content = document.getElementById('histContent');
-  const dayTasks = tasks.filter(t => t.date === histSelectedDate);
+
+  // Tarefas do dia: ao vivo primeiro, depois snapshot
+  let dayTasks = tasks.filter(t=>t.date===histSelectedDate);
+  let fromSnap = false;
+  if(dayTasks.length===0 && h[histSelectedDate]?.snapshot?.length>0){
+    dayTasks = h[histSelectedDate].snapshot;
+    fromSnap = true;
+  }
+
+  histCurrentTasks = dayTasks;
 
   if(!dayTasks.length){
-    content.innerHTML = `<div class="empty-state"><span class="es-ico">📭</span><p>Nenhuma tarefa registrada para ${dayLabel(histSelectedDate).toLowerCase()}.</p></div>`;
+    content.innerHTML=`<div class="empty-state"><span class="es-ico">📭</span><p>Nenhuma tarefa registrada para ${dayLabel(histSelectedDate).toLowerCase()}.</p></div>`;
     return;
   }
 
-  const done   = dayTasks.filter(t=>t.done);
-  const pend   = dayTasks.filter(t=>!t.done);
-  const pct    = Math.round(done.length/dayTasks.length*100);
-  const isFuture = histSelectedDate > todayStr();
-  const isToday  = histSelectedDate === todayStr();
+  const done    = dayTasks.filter(t=>t.done);
+  const pend    = dayTasks.filter(t=>!t.done);
+  const pct     = Math.round(done.length/dayTasks.length*100);
+  const isToday = histSelectedDate===todayStr();
 
   // ── Cabeçalho ──
   let html = `
     <div class="hist-day-header">
       <div class="hist-day-title">${daySub(histSelectedDate)}</div>
+      ${fromSnap?'<div style="font-size:11px;color:var(--accent);margin-bottom:6px;">📂 Dados do histórico salvo</div>':''}
       <div class="hist-day-meta">
         <span>📋 ${dayTasks.length} tarefa${dayTasks.length!==1?'s':''}</span>
         <span>✅ ${done.length} concluída${done.length!==1?'s':''}</span>
         <span>⏳ ${pend.length} pendente${pend.length!==1?'s':''}</span>
-        <span>📈 ${pct}% concluído</span>
-      </div>`;
+        <span>📈 ${pct}%</span>
+      </div>
+      ${!isToday?`
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:14px;">
+        <button class="hist-export-btn" onclick="histExportToToday('${histSelectedDate}')">
+          📤 Importar todas
+        </button>
+        <button class="hist-select-btn" onclick="histEnterSelectMode()">
+          ☑ Selecionar tarefas
+        </button>
+      </div>`:''}
+    </div>`;
 
-  // Botão exportar só para dias que não são hoje
-  if(!isToday){
-    html += `
-      <button class="hist-export-btn" onclick="histExportToToday('${histSelectedDate}')">
-        📤 Exportar todas para hoje
-      </button>`;
-  }
-
-  html += `</div>`;
-
-  // ── Lista de tarefas ──
-  html += `<div class="hist-tasks-wrap">`;
-
+  // ── Lista ──
+  html += `<div class="hist-tasks-wrap" id="histTasksWrap">`;
   if(pend.length){
-    html += `<div class="hist-section-label">⏳ Pendentes (${pend.length})</div>`;
-    pend.forEach(t=>{ html += histTaskHTML(t); });
+    html+=`<div class="hist-section-label">⏳ Pendentes (${pend.length})</div>`;
+    pend.forEach(t=>{ html+=histTaskHTML(t); });
   }
   if(done.length){
-    html += `<div class="hist-section-label">✅ Concluídas (${done.length})</div>`;
-    done.forEach(t=>{ html += histTaskHTML(t); });
+    html+=`<div class="hist-section-label">✅ Concluídas (${done.length})</div>`;
+    done.forEach(t=>{ html+=histTaskHTML(t); });
   }
+  html+=`</div>`;
 
-  html += `</div>`;
-
-  // Segundo botão no final se lista longa
-  if(!isToday && dayTasks.length > 4){
-    html += `
-      <button class="hist-export-btn" style="margin-top:12px;width:100%;justify-content:center;"
-        onclick="histExportToToday('${histSelectedDate}')">
-        📤 Exportar todas para hoje
-      </button>`;
+  // Botão extra no fim se muitas tarefas
+  if(!isToday && dayTasks.length>4){
+    html+=`
+      <div style="display:flex;gap:6px;margin-top:12px;flex-wrap:wrap;">
+        <button class="hist-export-btn" style="flex:1;justify-content:center;"
+          onclick="histExportToToday('${histSelectedDate}')">📤 Importar todas</button>
+        <button class="hist-select-btn" style="flex:1;justify-content:center;"
+          onclick="histEnterSelectMode()">☑ Selecionar tarefas</button>
+      </div>`;
   }
 
   content.innerHTML = html;
+
+  // Associa clique nas linhas (para modo seleção)
+  document.querySelectorAll('.hist-task-item[data-tid]').forEach(el=>{
+    el.addEventListener('click',()=>{
+      if(!histSelectMode) return;
+      const tid = el.dataset.tid;
+      if(histSelected.has(tid)){ histSelected.delete(tid); el.classList.remove('selected'); }
+      else { histSelected.add(tid); el.classList.add('selected'); }
+      _updateSelBar();
+    });
+  });
 }
 
 function histTaskHTML(t){
-  const timeChip  = t.timeStart ? `<span class="chip ct">⏰ ${t.timeStart}${t.timeEnd?'→'+t.timeEnd:''}</span>` : '';
-  const catChip   = t.category  ? `<span class="chip cc">🗂 ${t.category}</span>` : '';
-  const prioChip  = t.priority==='high'?'<span class="chip cph">🔴 Alta</span>':
-                    t.priority==='med' ?'<span class="chip cpm">🟡 Média</span>':
-                    t.priority==='low' ?'<span class="chip cpl">🟢 Baixa</span>':'';
+  const tid        = t.id || (t.name+'_'+t.date);
+  const timeChip   = t.timeStart?`<span class="chip ct">⏰ ${t.timeStart}${t.timeEnd?'→'+t.timeEnd:''}</span>`:'';
+  const catChip    = t.category?`<span class="chip cc">🗂 ${t.category}</span>`:'';
+  const prioChip   = t.priority==='high'?'<span class="chip cph">🔴 Alta</span>':
+                     t.priority==='med' ?'<span class="chip cpm">🟡 Média</span>':
+                     t.priority==='low' ?'<span class="chip cpl">🟢 Baixa</span>':'';
   return `
-    <div class="hist-task-item">
-      <span class="hist-check">${t.done?'✅':'⭕'}</span>
+    <div class="hist-task-item" data-tid="${escHtml(tid)}">
+      <span class="hist-check" style="display:block">${t.done?'✅':'⭕'}</span>
+      <div class="hist-sel-check" style="display:none"></div>
       <div class="hist-task-body">
         <div class="hist-task-name${t.done?' done-s':''}">${escHtml(t.name)}</div>
         <div class="hist-task-chips">${timeChip}${catChip}${prioChip}</div>
@@ -1813,65 +1957,141 @@ function histTaskHTML(t){
     </div>`;
 }
 
-// ── Exportar todas as tarefas de um dia para hoje ──
-function histExportToToday(fromDate){
-  const today = todayStr();
-  if(fromDate === today){
-    notify('ℹ️','Já é o dia de hoje!');
-    return;
-  }
+// ── Entra no modo de seleção individual ──
+function histEnterSelectMode(){
+  histSelectMode = true;
+  histSelected.clear();
+  // Troca ícones: mostra checkbox, esconde emoji
+  document.querySelectorAll('.hist-task-item').forEach(el=>{
+    el.classList.add('selectable');
+    el.querySelector('.hist-check').style.display='none';
+    el.querySelector('.hist-sel-check').style.display='flex';
+  });
+  _updateSelBar();
+}
 
-  const sourceTasks = tasks.filter(t => t.date === fromDate);
-  if(!sourceTasks.length){
-    notify('⚠️','Nenhuma tarefa para exportar.');
-    return;
-  }
+// ── Cancela modo de seleção ──
+function histCancelSelect(){
+  histSelectMode = false;
+  histSelected.clear();
+  document.querySelectorAll('.hist-task-item').forEach(el=>{
+    el.classList.remove('selectable','selected');
+    el.querySelector('.hist-check').style.display='block';
+    el.querySelector('.hist-sel-check').style.display='none';
+  });
+  _updateSelBar();
+}
 
-  // Nomes já existentes hoje (para evitar duplicatas)
-  const todayNames = tasks.filter(t=>t.date===today).map(t=>t.name.toLowerCase().trim());
-
-  let added = 0;
-  const toAdd = [];
-
-  sourceTasks.forEach(t => {
-    // Cria nova tarefa copiando todos os campos, mas como pendente e para hoje
-    const nt = {
-      ...t,
-      id:    Date.now() + Math.random() + '',
-      date:  today,
-      done:  false,       // sempre pendente ao exportar
-      _open: false,
-      _if:   fromDate,    // marca a origem
-      _order: tasks.length + added,
-    };
-    // Evita duplicatas pelo nome (case-insensitive)
-    if(!todayNames.includes(t.name.toLowerCase().trim())){
-      toAdd.push(nt);
-      todayNames.push(t.name.toLowerCase().trim());
-      added++;
+// ── Selecionar / deselecionar todas ──
+function histToggleSelectAll(){
+  const items = document.querySelectorAll('.hist-task-item[data-tid]');
+  const allSel = histSelected.size === items.length;
+  histSelected.clear();
+  items.forEach(el=>{
+    el.classList.remove('selected');
+    if(!allSel){
+      histSelected.add(el.dataset.tid);
+      el.classList.add('selected');
     }
   });
+  document.getElementById('histSelAllBtn').textContent =
+    allSel ? '☑ Selecionar todas' : '☐ Desmarcar todas';
+  _updateSelBar();
+}
 
-  if(added === 0){
-    notify('ℹ️','Todas as tarefas já existem em hoje.');
-    return;
+// ── Atualiza barra de seleção ──
+function _updateSelBar(){
+  const bar = document.getElementById('histSelBar');
+  const cnt = document.getElementById('histSelCount');
+  if(!bar) return;
+  if(histSelectMode){
+    bar.classList.add('show');
+    cnt.textContent = histSelected.size;
+  } else {
+    bar.classList.remove('show');
   }
+}
+
+// ── Importa tarefas selecionadas para hoje ──
+function histImportSelected(){
+  if(!histSelected.size){ notify('ℹ️','Selecione ao menos uma tarefa.'); return; }
+  const today = todayStr();
+  const todayNames = tasks.filter(t=>t.date===today).map(t=>t.name.toLowerCase().trim());
+  const toAdd = [];
+
+  // Encontra as tarefas selecionadas pelo tid (id ou name+date fallback)
+  histCurrentTasks.forEach(t=>{
+    const tid = t.id || (t.name+'_'+t.date);
+    if(!histSelected.has(tid)) return;
+    if(todayNames.includes(t.name.toLowerCase().trim())) return; // evita duplicata
+    const nt={
+      ...t,
+      id:   Date.now()+Math.random()+'',
+      date: today,
+      done: false,
+      _open:false,
+      _if:  histSelectedDate,
+      _order: tasks.length + toAdd.length,
+    };
+    toAdd.push(nt);
+    todayNames.push(t.name.toLowerCase().trim());
+  });
+
+  if(!toAdd.length){ notify('ℹ️','Tarefas selecionadas já existem hoje.'); return; }
 
   tasks.push(...toAdd);
-  toAdd.forEach(t => sbSaveTask(t));
-  lsSaveTasks();
-  saveH();
+  toAdd.forEach(t=>sbSaveTask(t));
+  lsSaveTasks(); saveH();
 
-  // Vai para a view de tarefas e mostra hoje
+  histCancelSelect();
+
+  // Navega para tarefas de hoje
   cur = today;
   document.querySelectorAll('.nav-btn').forEach(x=>x.classList.remove('active'));
   document.querySelector('[data-view="tasks"]').classList.add('active');
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
   document.getElementById('view-tasks').classList.add('active');
-  upDayNav();
-  render();
+  upDayNav(); render();
 
-  notify('📤', `${added} tarefa${added!==1?'s':''} exportada${added!==1?'s':''} para hoje!`);
+  notify('📥',`${toAdd.length} tarefa${toAdd.length!==1?'s':''} importada${toAdd.length!==1?'s':''} para hoje!`);
+}
+
+// ── Importar TODAS (botão de atalho) ──
+function histExportToToday(fromDate){
+  const today = todayStr();
+  if(fromDate===today){ notify('ℹ️','Já é o dia de hoje!'); return; }
+
+  const source = histCurrentTasks.length ? histCurrentTasks : tasks.filter(t=>t.date===fromDate);
+  if(!source.length){ notify('⚠️','Nenhuma tarefa para importar.'); return; }
+
+  const todayNames = tasks.filter(t=>t.date===today).map(t=>t.name.toLowerCase().trim());
+  let added=0;
+  const toAdd=[];
+
+  source.forEach(t=>{
+    if(todayNames.includes(t.name.toLowerCase().trim())) return;
+    toAdd.push({
+      ...t, id:Date.now()+Math.random()+'', date:today,
+      done:false, _open:false, _if:fromDate, _order:tasks.length+added
+    });
+    todayNames.push(t.name.toLowerCase().trim());
+    added++;
+  });
+
+  if(!added){ notify('ℹ️','Todas as tarefas já existem hoje.'); return; }
+
+  tasks.push(...toAdd);
+  toAdd.forEach(t=>sbSaveTask(t));
+  lsSaveTasks(); saveH();
+
+  cur=today;
+  document.querySelectorAll('.nav-btn').forEach(x=>x.classList.remove('active'));
+  document.querySelector('[data-view="tasks"]').classList.add('active');
+  document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+  document.getElementById('view-tasks').classList.add('active');
+  upDayNav(); render();
+
+  notify('📤',`${added} tarefa${added!==1?'s':''} importada${added!==1?'s':''} para hoje!`);
 }
 
 
@@ -2003,6 +2223,7 @@ async function doForgot(){
 async function doLogout(){
   document.getElementById('userDropdown').style.display='none';
   appBooted = false;
+  _bootAppCalled = false;
   cancelAllNotifs();
   await sb.auth.signOut();
   tasks=[];totalFocusSecs=0;
@@ -2235,12 +2456,13 @@ async function boot(){
 
   // ── Função central que inicia sessão ──
   async function startSession(user){
-    if(appBooted) return; // evita duplo boot
+    if(appBooted) return;
+    _bootAppCalled = false; // reset para nova sessão
     currentUser = user;
     updateUserBadge(user);
     showLoading();
     await sbLoadAll();
-    bootApp();
+    // bootApp é chamado dentro do finally do sbLoadAll via _safeBootApp
   }
 
   // ── Escuta mudanças de auth ──
