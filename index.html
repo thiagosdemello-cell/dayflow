@@ -404,6 +404,21 @@ body{transition:background .2s,color .2s;}
 @media(max-width:700px){
   .hist-sel-bar{left:52px;padding:10px 14px;}
 }
+/* Comentário como subtítulo da tarefa */
+.task-comment{
+  font-size:12px;color:var(--text2);margin-top:3px;line-height:1.45;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+  white-space:pre-wrap;word-break:break-word;
+}
+/* Campo de comentário no form de adição */
+.add-comment-wrap{margin-top:8px;}
+.add-comment-input{
+  width:100%;border:none;outline:none;background:none;resize:none;
+  font-size:13px;color:var(--text2);font-family:var(--font);line-height:1.45;
+  border-top:1px dashed var(--border2);padding:8px 0 2px;min-height:28px;max-height:80px;
+  overflow-y:auto;
+}
+.add-comment-input::placeholder{color:var(--text3);font-style:italic;}
 </style>
 <body>
 <div class="layout">
@@ -461,7 +476,13 @@ body{transition:background .2s,color .2s;}
     <div class="add-zone">
       <div class="add-main">
         <span style="font-size:18px">✏️</span>
-        <input class="add-input" id="addInput" placeholder="Nova tarefa… pressione Enter" autocomplete="off">
+        <div style="flex:1;display:flex;flex-direction:column;">
+          <input class="add-input" id="addInput" placeholder="Nova tarefa… pressione Enter" autocomplete="off">
+          <div class="add-comment-wrap" id="addCommentWrap" style="display:none;">
+            <textarea class="add-comment-input" id="addComment" placeholder="Comentário (opcional)…" rows="1"
+              oninput="this.style.height='auto';this.style.height=this.scrollHeight+'px'"></textarea>
+          </div>
+        </div>
         <button class="qbtn" id="toggleExp">⚙️ Detalhes</button>
       </div>
       <div class="add-exp" id="addExp">
@@ -804,8 +825,8 @@ body{transition:background .2s,color .2s;}
 // ╔══════════════════════════════════════════════════════╗
 // ║  SUPABASE CONFIG — substitua com suas credenciais   ║
 // ╚══════════════════════════════════════════════════════╝
-const SUPABASE_URL     = 'https://ktldhmnokiehqydqzjbf.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt0bGRobW5va2llaHF5ZHF6amJmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1ODUxOTksImV4cCI6MjA5NDE2MTE5OX0.G9GXAPlnBfofkfH6K90x7vM3zDPrX5EfwHt-Ziijcng';
+const SUPABASE_URL     = 'https://SEU-PROJETO.supabase.co';
+const SUPABASE_ANON_KEY = 'sua-anon-key-aqui';
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -925,15 +946,21 @@ function taskToRow(t, uid){
     date:t.date, priority:t.priority||'none', recur:t.recur||'none',
     category:t.category||'', time_start:t.timeStart||'',
     time_end:t.timeEnd||'', description:t.desc||'',
-    sort_order:t._order||0
+    sort_order:t._order||0,
+    // comment salvo no campo description com separador especial
+    // para não precisar alterar o schema do banco
+    description: [t.desc||'', t.comment||''].filter(Boolean).join('\n___COMMENT___\n')
   };
 }
 function rowToTask(r){
+  // Separa desc e comment do campo description
+  const parts = (r.description||'').split('\n___COMMENT___\n');
   return{
     id:r.id, name:r.name, done:r.done, date:r.date,
     priority:r.priority||'none', recur:r.recur||'none',
     category:r.category||'', timeStart:r.time_start||'',
-    timeEnd:r.time_end||'', desc:r.description||'',
+    timeEnd:r.time_end||'', desc:parts[0]||'',
+    comment:parts[1]||'',
     _order:r.sort_order||0, _open:false, _if:undefined
   };
 }
@@ -1261,9 +1288,10 @@ function checkBanner(){
   }else{document.getElementById('importBanner').classList.remove('show');}
 }
 document.getElementById('importConfirm').addEventListener('click',()=>{
-  const prev=dAdd(cur,-1),pp=tasks.filter(t=>t.date===prev&&!t.done),ex=tasks.filter(t=>t.date===cur).map(t=>t.name);let n=0;
+  const prev=dAdd(cur,-1),pp=tasks.filter(t=>t.date===prev&&!t.done);let n=0;
   pp.forEach(t=>{
-    if(!ex.includes(t.name)){
+    // _existsToday verifica por nome, bloqueando também recorrentes já existentes
+    if(!_existsToday(t.name)){
       const nt={...t,id:Date.now()+Math.random()+'',date:cur,done:false,_open:false,_if:prev};
       tasks.push(nt);
       sbSaveTask(nt);
@@ -1357,9 +1385,48 @@ function mkCard(t){
   const cc=t.category?`<span class="chip cc">🗂 ${t.category}</span>`:'';
   const rc=(t.recur&&t.recur!=='none')?`<span class="chip cr">🔁 ${{daily:'Diária',weekdays:'Úteis',weekly:'Semanal'}[t.recur]}</span>`:'';
   const pChip=t.priority==='high'?'<span class="chip cph">🔴 Alta</span>':t.priority==='med'?'<span class="chip cpm">🟡 Média</span>':t.priority==='low'?'<span class="chip cpl">🟢 Baixa</span>':'';
+  // Comentário como subtítulo — só aparece se tiver conteúdo
+  const commentHTML = t.comment ? `<div class="task-comment">${escHtml(t.comment)}</div>` : '';
+  const hasChips = t.timeStart||t.category||(t.recur&&t.recur!=='none')||t.priority!=='none';
+
   const PC=(p,l)=>`<button class="pc${t.priority===p?' p'+p.charAt(0):''}" data-prio="${p}" data-tid="${t.id}">${p==='high'?'🔴':p==='med'?'🟡':'🟢'} ${l}</button>`;
   const RO=(r,l,e)=>`<button class="ro${t.recur===r?' on':''}" data-recur="${r}" data-tid="${t.id}">${e} ${l}</button>`;
-  div.innerHTML=`${ps}<div class="task-row"><span class="drag-h">⠿</span><div class="cb${t.done?' on':''}" data-cb="${t.id}" role="checkbox" aria-checked="${t.done}" tabindex="0"><em class="cb-inner">✓</em></div><div class="task-body"><div class="task-name${t.done?' done':''}">${escHtml(t.name)}</div><div class="task-chips">${tc}${cc}${rc}${pChip}</div></div><div class="task-acts"><button class="ib ifoc" data-focus="${t.id}">🎯</button><button class="ib" data-expand="${t.id}">✏️</button><button class="ib idel" data-del="${t.id}">🗑</button></div></div><div class="task-exp${t._open?' open':''}" id="ex_${t.id}"><div class="exp-grid"><div class="ef"><div class="el">⏰ Início</div><input class="ei" type="time" value="${t.timeStart||''}" data-field="timeStart" data-tid="${t.id}"></div><div class="ef"><div class="el">🏁 Fim</div><input class="ei" type="time" value="${t.timeEnd||''}" data-field="timeEnd" data-tid="${t.id}"></div><div class="ef"><div class="el">🗂 Categoria</div><select class="ei" data-field="category" data-tid="${t.id}">${CATS.map(c=>`<option${t.category===c?' selected':''}>${c}</option>`).join('')}</select></div><div class="ef"><div class="el">🚦 Prioridade</div><div class="pchips">${PC('high','Alta')}${PC('med','Média')}${PC('low','Baixa')}</div></div></div><div class="ef" style="margin-top:8px;"><div class="el">🔁 Repetição</div><div class="rchips" style="margin-top:4px;">${RO('none','Nenhuma','🚫')}${RO('daily','Diária','📆')}${RO('weekdays','Úteis','💼')}${RO('weekly','Semanal','🗓')}</div></div><div class="ef" style="margin-top:8px;"><div class="el">📝 Notas</div><textarea class="exp-notes" data-field="desc" data-tid="${t.id}" placeholder="Observações…">${escHtml(t.desc||'')}</textarea></div></div>`;
+
+  div.innerHTML=`${ps}
+    <div class="task-row">
+      <span class="drag-h">⠿</span>
+      <div class="cb${t.done?' on':''}" data-cb="${t.id}" role="checkbox" aria-checked="${t.done}" tabindex="0"><em class="cb-inner">✓</em></div>
+      <div class="task-body">
+        <div class="task-name${t.done?' done':''}">${escHtml(t.name)}</div>
+        ${commentHTML}
+        ${hasChips?`<div class="task-chips">${tc}${cc}${rc}${pChip}</div>`:''}
+      </div>
+      <div class="task-acts">
+        <button class="ib ifoc" data-focus="${t.id}">🎯</button>
+        <button class="ib" data-expand="${t.id}">✏️</button>
+        <button class="ib idel" data-del="${t.id}">🗑</button>
+      </div>
+    </div>
+    <div class="task-exp${t._open?' open':''}" id="ex_${t.id}">
+      <div class="ef" style="margin-bottom:10px;">
+        <div class="el">💬 Comentário</div>
+        <textarea class="exp-notes" data-field="comment" data-tid="${t.id}"
+          placeholder="Adicione um comentário que aparece como subtítulo…"
+          style="min-height:44px;">${escHtml(t.comment||'')}</textarea>
+      </div>
+      <div class="exp-grid">
+        <div class="ef"><div class="el">⏰ Início</div><input class="ei" type="time" value="${t.timeStart||''}" data-field="timeStart" data-tid="${t.id}"></div>
+        <div class="ef"><div class="el">🏁 Fim</div><input class="ei" type="time" value="${t.timeEnd||''}" data-field="timeEnd" data-tid="${t.id}"></div>
+        <div class="ef"><div class="el">🗂 Categoria</div><select class="ei" data-field="category" data-tid="${t.id}">${CATS.map(c=>`<option${t.category===c?' selected':''}>${c}</option>`).join('')}</select></div>
+        <div class="ef"><div class="el">🚦 Prioridade</div><div class="pchips">${PC('high','Alta')}${PC('med','Média')}${PC('low','Baixa')}</div></div>
+      </div>
+      <div class="ef" style="margin-top:8px;"><div class="el">🔁 Repetição</div>
+        <div class="rchips" style="margin-top:4px;">${RO('none','Nenhuma','🚫')}${RO('daily','Diária','📆')}${RO('weekdays','Úteis','💼')}${RO('weekly','Semanal','🗓')}</div>
+      </div>
+      <div class="ef" style="margin-top:8px;"><div class="el">📝 Notas internas</div>
+        <textarea class="exp-notes" data-field="desc" data-tid="${t.id}" placeholder="Observações privadas…">${escHtml(t.desc||'')}</textarea>
+      </div>
+    </div>`;
   div.addEventListener('click',e=>{
     const cb=e.target.closest('[data-cb]'),ex=e.target.closest('[data-expand]'),dl=e.target.closest('[data-del]'),fo=e.target.closest('[data-focus]'),pr=e.target.closest('[data-prio]'),re=e.target.closest('[data-recur]');
     if(cb){const t2=fT(cb.dataset.cb);if(t2){t2.done=!t2.done;saveData(t2);if(t2.done)cancelTaskNotif(t2.id);else scheduleTaskNotif(t2);render();if(t2.done)notify('✅','Tarefa concluída!');}}
@@ -1391,23 +1458,47 @@ function mkCard(t){
 document.getElementById('toggleExp').addEventListener('click',()=>{expOpen=!expOpen;document.getElementById('addExp').classList.toggle('show',expOpen);document.getElementById('toggleExp').classList.toggle('on',expOpen);});
 document.getElementById('cancelAdd').addEventListener('click',()=>{expOpen=false;document.getElementById('addExp').classList.remove('show');document.getElementById('toggleExp').classList.remove('on');document.getElementById('addInput').value='';resetF();});
 document.getElementById('confirmAdd').addEventListener('click',addTask);
-document.getElementById('addInput').addEventListener('keydown',e=>{if(e.key==='Enter')addTask();});
+
+// Mostra campo de comentário quando há texto no nome
+document.getElementById('addInput').addEventListener('input', e=>{
+  const wrap = document.getElementById('addCommentWrap');
+  if(e.target.value.trim()){ wrap.style.display='block'; }
+  else { wrap.style.display='none'; document.getElementById('addComment').value=''; }
+});
+document.getElementById('addInput').addEventListener('keydown',e=>{
+  if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); addTask(); }
+});
+// Shift+Enter no comentário vai para nova linha; Enter simples cria tarefa
+document.getElementById('addComment').addEventListener('keydown',e=>{
+  if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); addTask(); }
+});
+
 document.querySelectorAll('#nPrioGrp .pc').forEach(b=>b.addEventListener('click',()=>{nP=nP===b.dataset.p?'none':b.dataset.p;document.querySelectorAll('#nPrioGrp .pc').forEach(x=>x.className='pc');if(nP!=='none')b.classList.add('p'+nP.charAt(0));}));
 document.querySelectorAll('#nRecurGrp .ro').forEach(b=>b.addEventListener('click',()=>{nR=nR===b.dataset.r?'none':b.dataset.r;document.querySelectorAll('#nRecurGrp .ro').forEach(x=>x.classList.remove('on'));if(nR!=='none')b.classList.add('on');}));
 
 function addTask(){
   const name=document.getElementById('addInput').value.trim();if(!name)return;
+  const comment=document.getElementById('addComment').value.trim();
   const nt={id:Date.now()+Math.random()+'',name,done:false,date:cur,priority:nP,recur:nR,
     category:document.getElementById('nCat').value,timeStart:document.getElementById('nStart').value,
-    timeEnd:document.getElementById('nEnd').value,desc:'',_open:false,_order:tasks.length};
+    timeEnd:document.getElementById('nEnd').value,desc:'',comment:comment,_open:false,_order:tasks.length};
   tasks.push(nt);
   saveData(nt);
-  scheduleTaskNotif(nt); // agenda lembrete se tiver horário
+  scheduleTaskNotif(nt);
   render();
   notify('✅','Tarefa adicionada!');
   document.getElementById('addInput').value='';resetF();
 }
-function resetF(){nP='none';nR='none';document.querySelectorAll('#nPrioGrp .pc').forEach(x=>x.className='pc');document.querySelectorAll('#nRecurGrp .ro').forEach(x=>x.classList.remove('on'));document.getElementById('nCat').value='';document.getElementById('nStart').value='';document.getElementById('nEnd').value='';}
+function resetF(){
+  nP='none';nR='none';
+  document.querySelectorAll('#nPrioGrp .pc').forEach(x=>x.className='pc');
+  document.querySelectorAll('#nRecurGrp .ro').forEach(x=>x.classList.remove('on'));
+  document.getElementById('nCat').value='';
+  document.getElementById('nStart').value='';
+  document.getElementById('nEnd').value='';
+  document.getElementById('addComment').value='';
+  document.getElementById('addCommentWrap').style.display='none';
+}
 document.querySelectorAll('.fc').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.fc').forEach(x=>x.classList.remove('active'));b.classList.add('active');filt=b.dataset.f;render();}));
 document.getElementById('clearDone').addEventListener('click',()=>{
   const toDelete = tasks.filter(t=>t.done && t.date===cur);
@@ -1977,47 +2068,50 @@ function _updateSelBar(){
 }
 
 // ── Importa tarefas selecionadas para hoje ──
+// Helper: verifica se tarefa já existe hoje (por nome, case-insensitive)
+// Também bloqueia importação se já existe recorrente com mesmo nome
+function _existsToday(name){
+  const n = name.toLowerCase().trim();
+  return tasks.some(t => t.date===todayStr() && t.name.toLowerCase().trim()===n);
+}
+
 function histImportSelected(){
   if(!histSelected.size){ notify('ℹ️','Selecione ao menos uma tarefa.'); return; }
   const today = todayStr();
-  const todayNames = tasks.filter(t=>t.date===today).map(t=>t.name.toLowerCase().trim());
-  const toAdd = [];
+  let skipped=0;
+  const toAdd=[];
 
-  // Encontra as tarefas selecionadas pelo tid (id ou name+date fallback)
   histCurrentTasks.forEach(t=>{
     const tid = t.id || (t.name+'_'+t.date);
     if(!histSelected.has(tid)) return;
-    if(todayNames.includes(t.name.toLowerCase().trim())) return; // evita duplicata
-    const nt={
-      ...t,
-      id:   Date.now()+Math.random()+'',
-      date: today,
-      done: false,
-      _open:false,
-      _if:  histSelectedDate,
-      _order: tasks.length + toAdd.length,
-    };
-    toAdd.push(nt);
-    todayNames.push(t.name.toLowerCase().trim());
+    // Pula se já existe hoje (incluindo recorrentes com mesmo nome)
+    if(_existsToday(t.name)){ skipped++; return; }
+    toAdd.push({
+      ...t, id:Date.now()+Math.random()+'', date:today,
+      done:false, _open:false, _if:histSelectedDate, _order:tasks.length+toAdd.length,
+    });
   });
 
-  if(!toAdd.length){ notify('ℹ️','Tarefas selecionadas já existem hoje.'); return; }
+  if(!toAdd.length){
+    notify('ℹ️', skipped?`Todas já existem hoje (${skipped} ignorada${skipped!==1?'s':''}).`:'Nenhuma para importar.');
+    return;
+  }
 
   tasks.push(...toAdd);
   toAdd.forEach(t=>sbSaveTask(t));
   cacheWriteNow(); saveH();
-
   histCancelSelect();
-
-  // Navega para tarefas de hoje
-  cur = today;
+  cur=today;
   document.querySelectorAll('.nav-btn').forEach(x=>x.classList.remove('active'));
   document.querySelector('[data-view="tasks"]').classList.add('active');
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
   document.getElementById('view-tasks').classList.add('active');
   upDayNav(); render();
 
-  notify('📥',`${toAdd.length} tarefa${toAdd.length!==1?'s':''} importada${toAdd.length!==1?'s':''} para hoje!`);
+  const msg = skipped
+    ? `${toAdd.length} importada${toAdd.length!==1?'s':''} • ${skipped} já existia${skipped!==1?'m':''} hoje`
+    : `${toAdd.length} tarefa${toAdd.length!==1?'s':''} importada${toAdd.length!==1?'s':''} para hoje!`;
+  notify('📥', msg);
 }
 
 // ── Importar TODAS (botão de atalho) ──
@@ -2028,26 +2122,26 @@ function histExportToToday(fromDate){
   const source = histCurrentTasks.length ? histCurrentTasks : tasks.filter(t=>t.date===fromDate);
   if(!source.length){ notify('⚠️','Nenhuma tarefa para importar.'); return; }
 
-  const todayNames = tasks.filter(t=>t.date===today).map(t=>t.name.toLowerCase().trim());
-  let added=0;
+  let skipped=0;
   const toAdd=[];
 
   source.forEach(t=>{
-    if(todayNames.includes(t.name.toLowerCase().trim())) return;
+    // Pula se já existe hoje (incluindo recorrentes com mesmo nome)
+    if(_existsToday(t.name)){ skipped++; return; }
     toAdd.push({
       ...t, id:Date.now()+Math.random()+'', date:today,
-      done:false, _open:false, _if:fromDate, _order:tasks.length+added
+      done:false, _open:false, _if:fromDate, _order:tasks.length+toAdd.length
     });
-    todayNames.push(t.name.toLowerCase().trim());
-    added++;
   });
 
-  if(!added){ notify('ℹ️','Todas as tarefas já existem hoje.'); return; }
+  if(!toAdd.length){
+    notify('ℹ️', `Todas já existem hoje (${skipped} ignorada${skipped!==1?'s':''}).`);
+    return;
+  }
 
   tasks.push(...toAdd);
   toAdd.forEach(t=>sbSaveTask(t));
   cacheWriteNow(); saveH();
-
   cur=today;
   document.querySelectorAll('.nav-btn').forEach(x=>x.classList.remove('active'));
   document.querySelector('[data-view="tasks"]').classList.add('active');
@@ -2055,7 +2149,10 @@ function histExportToToday(fromDate){
   document.getElementById('view-tasks').classList.add('active');
   upDayNav(); render();
 
-  notify('📤',`${added} tarefa${added!==1?'s':''} importada${added!==1?'s':''} para hoje!`);
+  const msg = skipped
+    ? `${toAdd.length} importada${toAdd.length!==1?'s':''} • ${skipped} já existia${skipped!==1?'m':''} hoje`
+    : `${toAdd.length} tarefa${toAdd.length!==1?'s':''} importada${toAdd.length!==1?'s':''} para hoje!`;
+  notify('📤', msg);
 }
 
 
