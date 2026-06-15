@@ -825,8 +825,8 @@ body{transition:background .2s,color .2s;}
 // ╔══════════════════════════════════════════════════════╗
 // ║  SUPABASE CONFIG — substitua com suas credenciais   ║
 // ╚══════════════════════════════════════════════════════╝
-const SUPABASE_URL     = 'https://ktldhmnokiehqydqzjbf.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt0bGRobW5va2llaHF5ZHF6amJmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1ODUxOTksImV4cCI6MjA5NDE2MTE5OX0.G9GXAPlnBfofkfH6K90x7vM3zDPrX5EfwHt-Ziijcng';
+const SUPABASE_URL     = 'https://SEU-PROJETO.supabase.co';
+const SUPABASE_ANON_KEY = 'sua-anon-key-aqui';
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -1075,7 +1075,7 @@ function _safeBootApp(){
   bootApp();
 }
 
-function bootApp(){
+async function bootApp(){
   if(appBooted) return;
   appBooted = true;
   applyTheme();
@@ -1083,7 +1083,7 @@ function bootApp(){
   cur = todayStr();
   upDayNav();
   render();
-  checkPending();
+  await checkPending();
   autoSaveHistory();
   updFocusUI();
   upFocusTotalDisp();
@@ -1101,17 +1101,55 @@ function bootApp(){
 // ═══════════════════════════════════════
 
 // Salva uma tarefa direto no Supabase + atualiza cache APÓS confirmação
+// Debounce curto (150ms) para não sobrecarregar, mas flush imediato ao fechar
+const _pendingTaskSaves = new Map(); // taskId → task (para flush imediato)
+
 function sbSaveTask(task){
   if(!currentUser) return;
+  // Guarda a versão mais recente para flush imediato
+  _pendingTaskSaves.set(task.id, task);
   clearTimeout(saveDebounce[task.id]);
   saveDebounce[task.id] = setTimeout(async()=>{
-    if(!isOnline){ pendingWrites.set(task.id, {type:'upsert', task}); return; }
+    if(!isOnline){ pendingWrites.set(task.id, {type:'upsert', task}); _pendingTaskSaves.delete(task.id); return; }
     const row = taskToRow(task, currentUser.id);
     const {error} = await sb.from('tasks').upsert(row, {onConflict:'id'});
     if(error){ console.warn('sbSaveTask error', error); pendingWrites.set(task.id, {type:'upsert', task}); }
     else { cacheWrite({tasks, ts: Date.now()}); saveH(); }
-  }, 300);
+    _pendingTaskSaves.delete(task.id);
+  }, 150); // reduzido de 300ms para 150ms
 }
+
+// Flush imediato de todos os saves pendentes (chamado ao fechar o app)
+async function flushImmediately(){
+  if(!currentUser || !isOnline) return;
+  // Cancela todos os debounces e salva agora
+  for(const [id, task] of _pendingTaskSaves.entries()){
+    clearTimeout(saveDebounce[id]);
+    try{
+      const row = taskToRow(task, currentUser.id);
+      await sb.from('tasks').upsert(row, {onConflict:'id'});
+    }catch(e){ pendingWrites.set(id, {type:'upsert', task}); }
+    _pendingTaskSaves.delete(id);
+  }
+  if(_pendingTaskSaves.size === 0) cacheWrite({tasks, ts:Date.now()});
+}
+
+// ── Flush ao fechar/minimizar o app ──
+// Garante que nenhuma alteração seja perdida quando o usuário sai do app
+document.addEventListener('visibilitychange', ()=>{
+  if(document.hidden && appBooted){
+    // App indo para background — salva imediatamente qualquer coisa pendente
+    flushImmediately();
+  }
+});
+// pagehide: disparado no iOS quando o app é fechado de verdade
+window.addEventListener('pagehide', ()=>{
+  if(appBooted) flushImmediately();
+});
+// beforeunload: desktop
+window.addEventListener('beforeunload', ()=>{
+  if(appBooted) flushImmediately();
+});
 
 function sbDeleteTask(taskId){
   if(!currentUser) return;
@@ -1869,17 +1907,94 @@ document.getElementById('exportDocxBtn').addEventListener('click',async()=>{
 // ═══════════════════════════════════════
 // PENDING MODAL
 // ═══════════════════════════════════════
-function checkPending(){
-  const y=dAdd(todayStr(),-1),yp=tasks.filter(t=>t.date===y&&!t.done),al=tasks.some(t=>t.date===todayStr()&&t._if===y);
-  if(!yp.length||al)return;
-  document.getElementById('pendingList').innerHTML=yp.map(t=>`<div class="modal-item">• ${escHtml(t.name)}</div>`).join('');
+// ── Modal de tarefas pendentes ──
+// Aparece APENAS UMA VEZ por dia (na primeira abertura após 00:00h)
+// ── Flag "já mostrou pendentes hoje" — persiste no Supabase via preferences ──
+const PENDING_SHOWN_KEY = 'df_pending_shown';
+
+async function savePendingShownDate(date){
+  localStorage.setItem(PENDING_SHOWN_KEY, date);
+  // Persiste no Supabase também (via preferences, campo extra)
+  if(!currentUser || !isOnline) return;
+  try{
+    await sb.from('preferences').upsert(
+      {user_id: currentUser.id, theme: dark?'dark':'light', pending_shown_date: date},
+      {onConflict:'user_id'}
+    );
+  }catch(e){ /* silencioso — localStorage é suficiente como fallback */ }
+}
+
+async function getPendingShownDate(){
+  // Tenta localStorage primeiro (mais rápido)
+  const local = localStorage.getItem(PENDING_SHOWN_KEY);
+  if(local) return local;
+  // Tenta Supabase como fallback (quando iOS apagou o localStorage)
+  if(!currentUser || !isOnline) return null;
+  try{
+    const {data} = await sb.from('preferences')
+      .select('pending_shown_date')
+      .eq('user_id', currentUser.id)
+      .maybeSingle();
+    if(data?.pending_shown_date){
+      // Restaura no localStorage para próximas consultas
+      localStorage.setItem(PENDING_SHOWN_KEY, data.pending_shown_date);
+      return data.pending_shown_date;
+    }
+  }catch(e){}
+  return null;
+}
+
+async function checkPending(){
+  const today = todayStr();
+  const yesterday = dAdd(today, -1);
+
+  // Verifica se já mostrou hoje (localStorage + Supabase)
+  const shownDate = await getPendingShownDate();
+  if(shownDate === today) return;
+
+  // Verifica se há tarefas pendentes de ontem
+  const yp = tasks.filter(t => t.date === yesterday && !t.done);
+  if(!yp.length){
+    await savePendingShownDate(today); // marca para não checar de novo hoje
+    return;
+  }
+
+  // Verifica se já existem tarefas hoje com os mesmos nomes (já importou)
+  const todayNames = tasks.filter(t=>t.date===today).map(t=>t.name.toLowerCase().trim());
+  const notYetImported = yp.filter(t=>!todayNames.includes(t.name.toLowerCase().trim()));
+  if(!notYetImported.length){
+    await savePendingShownDate(today);
+    return;
+  }
+
+  // Mostra o modal — e marca ANTES para não mostrar de novo mesmo se fechar o app
+  await savePendingShownDate(today);
+
+  document.getElementById('pendingList').innerHTML =
+    notYetImported.map(t=>`<div class="modal-item">• ${escHtml(t.name)}</div>`).join('');
   document.getElementById('pendingModal').classList.add('open');
-  document.getElementById('modalMove').onclick=()=>{
-    const today=todayStr(),ex=tasks.filter(t=>t.date===today).map(t=>t.name);let n=0;
-    yp.forEach(t=>{if(!ex.includes(t.name)){const nt={...t,id:Date.now()+Math.random()+'',date:today,done:false,_open:false,_if:y};tasks.push(nt);sbSaveTask(nt);n++;}});
-    cacheWriteNow();render();document.getElementById('pendingModal').classList.remove('open');notify('📥',`${n} movida${n>1?'s':''}!`);
+
+  document.getElementById('modalMove').onclick = ()=>{
+    const currentTodayNames = tasks.filter(t=>t.date===today).map(t=>t.name.toLowerCase().trim());
+    let n = 0;
+    notYetImported.forEach(t=>{
+      if(!currentTodayNames.includes(t.name.toLowerCase().trim())){
+        const nt={...t, id:Date.now()+Math.random()+'', date:today, done:false, _open:false};
+        tasks.push(nt);
+        sbSaveTask(nt);
+        currentTodayNames.push(t.name.toLowerCase().trim());
+        n++;
+      }
+    });
+    cacheWriteNow();
+    render();
+    document.getElementById('pendingModal').classList.remove('open');
+    notify('📥', `${n} tarefa${n!==1?'s':''} importada${n!==1?'s':''} para hoje!`);
   };
-  document.getElementById('modalIgnore').onclick=()=>document.getElementById('pendingModal').classList.remove('open');
+
+  document.getElementById('modalIgnore').onclick = ()=>{
+    document.getElementById('pendingModal').classList.remove('open');
+  };
 }
 
 // ═══════════════════════════════════════
@@ -2321,191 +2436,165 @@ async function doLogout(){
 }
 
 // ═══════════════════════════════════════
-// NOTIFICAÇÕES — Web Push + Service Worker
-// Funciona no iPhone com iOS 16.4+ quando
-// o app está salvo na tela inicial (PWA)
+// NOTIFICAÇÕES — Web Push VAPID
+// Funciona na tela bloqueada do iPhone via APNs
+// Requer: VAPID keys + Supabase Edge Functions
 // ═══════════════════════════════════════
-let swReg = null;               // registro do service worker
-let notifPermission = Notification.permission; // 'default'|'granted'|'denied'
-const scheduledNotifs = {};     // taskId → timeoutId (evita duplicatas)
 
-// ── Registra o Service Worker ──
+// ⚠️ SUBSTITUA pela sua chave pública VAPID
+// Gere em: https://web-push-codelab.glitch.me/
+// ou: npx web-push generate-vapid-keys
+const VAPID_PUBLIC_KEY = 'COLE_SUA_VAPID_PUBLIC_KEY_AQUI';
+
+let swReg = null;
+let pushSub = null;
+const scheduledNotifs = {};
+let notifPermission = (typeof Notification!=='undefined') ? Notification.permission : 'denied';
+
 async function registerSW(){
   if(!('serviceWorker' in navigator)) return;
   try{
     swReg = await navigator.serviceWorker.register('/sw.js');
-    console.log('SW registrado:', swReg.scope);
-  }catch(e){
-    console.warn('SW falhou:', e);
-  }
+    await navigator.serviceWorker.ready;
+    pushSub = await swReg.pushManager.getSubscription();
+  }catch(e){ console.warn('SW falhou:',e); }
 }
 
-// ── Pede permissão de notificação ──
+function urlBase64ToUint8Array(b64){
+  const pad = b64.length%4 ? '='.repeat(4-b64.length%4) : '';
+  const raw = atob((b64+pad).replace(/-/g,'+').replace(/_/g,'/'));
+  return Uint8Array.from([...raw].map(c=>c.charCodeAt(0)));
+}
+
 async function requestNotifPermission(){
-  if(!('Notification' in window)){
-    notify('ℹ️','Seu navegador não suporta notificações');
-    return false;
-  }
-  if(Notification.permission === 'granted') return true;
-  if(Notification.permission === 'denied'){
-    notify('⚠️','Notificações bloqueadas — ative nas configurações do Safari');
-    return false;
+  if(!('Notification' in window)){ notify('ℹ️','Notificações não suportadas'); return false; }
+  if(Notification.permission==='denied'){
+    notify('⚠️','Bloqueadas — ative em Ajustes > Safari > Notificações'); return false;
   }
   const result = await Notification.requestPermission();
   notifPermission = result;
-  if(result === 'granted'){
-    notify('🔔','Notificações ativadas!');
-    scheduleAllNotifs(); // agenda todas ao ativar
+  if(result!=='granted'){ notify('ℹ️','Permissão não concedida'); return false; }
+
+  if(!swReg){ notify('⚠️','Service Worker não pronto'); return false; }
+
+  if(VAPID_PUBLIC_KEY==='COLE_SUA_VAPID_PUBLIC_KEY_AQUI'){
+    notify('🔔','Lembretes ativados (apenas com app aberto)');
+    scheduleAllNotifs(); return true;
+  }
+
+  try{
+    pushSub = await swReg.pushManager.subscribe({
+      userVisibleOnly:true,
+      applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
+    });
+    await savePushSubscription(pushSub);
+    notify('🔔','Lembretes ativados! Você receberá notificações na tela bloqueada.');
+    await scheduleAllNotifsServer();
     return true;
-  }
-  return false;
-}
-
-// ── Dispara uma notificação imediatamente (para teste) ──
-function fireNotif(title, body, tag='dayflow'){
-  if(Notification.permission !== 'granted') return;
-  // Via SW (necessário no iOS PWA)
-  if(swReg){
-    swReg.active?.postMessage({ type:'SCHEDULE_NOTIFICATION', title, body, delay:0, tag });
-  } else {
-    new Notification(title, { body, icon:'/icon-192.png', tag });
+  }catch(e){
+    console.warn('Push subscribe error:',e);
+    notify('🔔','Lembretes ativados (apenas com app aberto)');
+    scheduleAllNotifs(); return true;
   }
 }
 
-// ── Agenda notificação para uma tarefa com horário ──
+async function savePushSubscription(sub){
+  if(!currentUser||!isOnline) return;
+  const json = sub.toJSON();
+  await sb.from('push_subscriptions').upsert({
+    user_id:currentUser.id, endpoint:sub.endpoint,
+    p256dh:json.keys.p256dh, auth:json.keys.auth,
+  },{onConflict:'user_id,endpoint'});
+}
+
+async function scheduleNotifServer(task){
+  if(!currentUser||!isOnline||!task.timeStart||task.done||task.date!==todayStr()) return;
+  const [h,m]=task.timeStart.split(':').map(Number);
+  const fireAt=new Date(); fireAt.setHours(h,m,0,0);
+  if(fireAt<=new Date()) return;
+  const body=task.timeEnd
+    ?`${task.timeStart} → ${task.timeEnd}${task.category?' • '+task.category:''}`
+    :`Agendada para ${task.timeStart}${task.category?' • '+task.category:''}`;
+  await sb.from('scheduled_notifications').upsert({
+    user_id:currentUser.id,task_id:task.id,task_name:task.name,
+    task_body:body,fire_at:fireAt.toISOString(),sent:false,
+  },{onConflict:'user_id,task_id,fire_at'});
+}
+
+async function scheduleAllNotifsServer(){
+  if(!currentUser||!isOnline) return;
+  const today=todayStr();
+  for(const t of tasks.filter(t=>t.date===today&&!t.done&&t.timeStart))
+    await scheduleNotifServer(t);
+}
+
+async function cancelNotifServer(taskId){
+  if(!currentUser||!isOnline) return;
+  await sb.from('scheduled_notifications').delete()
+    .eq('user_id',currentUser.id).eq('task_id',taskId).eq('sent',false);
+}
+
 function scheduleTaskNotif(task){
-  if(Notification.permission !== 'granted') return;
-  if(!task.timeStart || task.done) return;
-  if(task.date !== todayStr()) return; // só agenda tarefas de hoje
-
-  // Cancela agendamento anterior se existir
-  if(scheduledNotifs[task.id]){
-    clearTimeout(scheduledNotifs[task.id]);
-    delete scheduledNotifs[task.id];
-  }
-
-  const [h, m] = task.timeStart.split(':').map(Number);
-  const now = new Date();
-  const target = new Date();
-  target.setHours(h, m, 0, 0);
-
-  const delay = target - now;
-  if(delay < 0) return; // já passou
-
-  const title = '⏰ ' + task.name;
-  const body = task.timeEnd
-    ? `Horário: ${task.timeStart} → ${task.timeEnd}${task.category ? ' • '+task.category : ''}`
-    : `Agendada para ${task.timeStart}${task.category ? ' • '+task.category : ''}`;
-
-  scheduledNotifs[task.id] = setTimeout(()=>{
-    // Verifica se ainda está pendente antes de disparar
-    const t = fT(task.id);
-    if(t && !t.done){
-      if(swReg){
-        swReg.active?.postMessage({ type:'SCHEDULE_NOTIFICATION', title, body, delay:0, tag: task.id });
-      } else {
-        new Notification(title, { body, icon:'/icon-192.png', tag: task.id });
-      }
+  if(scheduledNotifs[task.id]){clearTimeout(scheduledNotifs[task.id]);delete scheduledNotifs[task.id];}
+  if(!task.timeStart||task.done||task.date!==todayStr()) return;
+  const [h,m]=task.timeStart.split(':').map(Number);
+  const target=new Date(); target.setHours(h,m,0,0);
+  const delay=target-Date.now(); if(delay<0) return;
+  const title='⏰ '+task.name;
+  const body=task.timeEnd
+    ?`${task.timeStart} → ${task.timeEnd}${task.category?' • '+task.category:''}`
+    :`Agendada para ${task.timeStart}${task.category?' • '+task.category:''}`;
+  scheduledNotifs[task.id]=setTimeout(()=>{
+    const t2=fT(task.id);
+    if(t2&&!t2.done&&swReg&&Notification.permission==='granted'){
+      swReg.active?.postMessage({type:'SHOW_NOW',title,body,tag:task.id});
     }
     delete scheduledNotifs[task.id];
-  }, delay);
+  },delay);
+  scheduleNotifServer(task);
 }
 
-// ── Cancela notificação de uma tarefa ──
 function cancelTaskNotif(taskId){
-  if(scheduledNotifs[taskId]){
-    clearTimeout(scheduledNotifs[taskId]);
-    delete scheduledNotifs[taskId];
-  }
+  if(scheduledNotifs[taskId]){clearTimeout(scheduledNotifs[taskId]);delete scheduledNotifs[taskId];}
+  cancelNotifServer(taskId);
 }
 
-// ── Agenda notificações para todas as tarefas de hoje ──
 function scheduleAllNotifs(){
-  if(Notification.permission !== 'granted') return;
-  const today = todayStr();
-  tasks.filter(t => t.date === today && !t.done && t.timeStart).forEach(scheduleTaskNotif);
+  if(Notification.permission!=='granted') return;
+  tasks.filter(t=>t.date===todayStr()&&!t.done&&t.timeStart).forEach(scheduleTaskNotif);
 }
 
-// ── Cancela tudo (ex: ao fazer logout) ──
 function cancelAllNotifs(){
-  Object.keys(scheduledNotifs).forEach(id => {
-    clearTimeout(scheduledNotifs[id]);
-    delete scheduledNotifs[id];
-  });
+  Object.keys(scheduledNotifs).forEach(id=>{clearTimeout(scheduledNotifs[id]);delete scheduledNotifs[id];});
 }
 
-// ── UI: banner de ativação de notificações ──
 function showNotifBanner(){
-  // Só mostra se ainda não perguntou e se é PWA ou Safari
-  if(Notification.permission !== 'default') return;
-  if(document.getElementById('notifBanner')) return;
-
-  const banner = document.createElement('div');
-  banner.id = 'notifBanner';
-  banner.style.cssText = `
-    position:fixed;bottom:70px;left:50%;transform:translateX(-50%);
-    background:var(--surface);border:1px solid var(--border2);
-    border-radius:var(--r);padding:14px 18px;
-    display:flex;align-items:center;gap:12px;
-    box-shadow:var(--shadow-lg);z-index:400;
-    max-width:340px;width:90%;animation:slideUp .3s ease;
-  `;
-  banner.innerHTML = `
-    <span style="font-size:24px;flex-shrink:0">🔔</span>
-    <div style="flex:1">
-      <div style="font-size:13px;font-weight:500;color:var(--text);margin-bottom:2px;">Ativar lembretes?</div>
-      <div style="font-size:11px;color:var(--text2);">Receba notificação quando chegar o horário de uma tarefa</div>
-    </div>
-    <div style="display:flex;flex-direction:column;gap:5px;flex-shrink:0">
-      <button onclick="requestNotifPermission();document.getElementById('notifBanner').remove();"
-        style="padding:6px 12px;border-radius:6px;border:none;background:var(--accent);color:#fff;font-size:12px;cursor:pointer;font-family:var(--font);white-space:nowrap;">
-        Ativar
-      </button>
-      <button onclick="localStorage.setItem('notifDismissed','1');document.getElementById('notifBanner').remove();"
-        style="padding:5px 12px;border-radius:6px;border:1px solid var(--border);background:none;color:var(--text3);font-size:12px;cursor:pointer;font-family:var(--font);">
-        Agora não
-      </button>
-    </div>
-  `;
+  if(Notification.permission!=='default'||document.getElementById('notifBanner')||localStorage.getItem('notifDismissed')) return;
+  const banner=document.createElement('div');
+  banner.id='notifBanner';
+  banner.style.cssText='position:fixed;bottom:70px;left:50%;transform:translateX(-50%);background:var(--surface);border:1px solid var(--border2);border-radius:var(--r);padding:14px 18px;display:flex;align-items:center;gap:12px;box-shadow:var(--shadow-lg);z-index:400;max-width:340px;width:90%;animation:slideUp .3s ease;';
+  banner.innerHTML=`<span style="font-size:24px;flex-shrink:0">🔔</span><div style="flex:1"><div style="font-size:13px;font-weight:500;color:var(--text);margin-bottom:2px;">Ativar lembretes?</div><div style="font-size:11px;color:var(--text2);">Receba notificações na tela bloqueada quando chegar o horário</div></div><div style="display:flex;flex-direction:column;gap:5px;flex-shrink:0"><button onclick="requestNotifPermission();this.closest('#notifBanner').remove();" style="padding:6px 12px;border-radius:6px;border:none;background:var(--accent);color:#fff;font-size:12px;cursor:pointer;font-family:var(--font);">Ativar</button><button onclick="localStorage.setItem('notifDismissed','1');this.closest('#notifBanner').remove();" style="padding:5px 12px;border-radius:6px;border:1px solid var(--border);background:none;color:var(--text3);font-size:12px;cursor:pointer;font-family:var(--font);">Agora não</button></div>`;
   document.body.appendChild(banner);
 }
 
-// ── Adiciona opção de notificações no menu do usuário ──
 function addNotifMenuItem(){
-  const dropdown = document.getElementById('userDropdown');
-  if(!dropdown || document.getElementById('notifMenuItem')) return;
-
-  // ── Item de notificações ──
-  const item = document.createElement('button');
-  item.id = 'notifMenuItem';
-  item.style.cssText = 'width:100%;padding:10px 14px;background:none;border:none;border-top:1px solid var(--border);text-align:left;font-size:13px;color:var(--text2);cursor:pointer;font-family:var(--font);display:flex;align-items:center;gap:7px;';
-  item.innerHTML = `🔔 <span id="notifMenuLabel">${Notification.permission==='granted'?'Lembretes ativos ✓':'Ativar lembretes'}</span>`;
-  item.onclick = async()=>{
-    toggleUserDropdown();
-    if(Notification.permission==='granted'){ notify('🔔','Lembretes já estão ativos!'); }
-    else{
-      await requestNotifPermission();
-      const label = document.getElementById('notifMenuLabel');
-      if(label) label.textContent = Notification.permission==='granted'?'Lembretes ativos ✓':'Ativar lembretes';
-    }
-  };
-
-  // ── Item de diagnóstico ──
-  const diagItem = document.createElement('button');
-  diagItem.id = 'diagMenuItem';
-  diagItem.style.cssText = 'width:100%;padding:10px 14px;background:none;border:none;border-top:1px solid var(--border);text-align:left;font-size:13px;color:var(--text2);cursor:pointer;font-family:var(--font);display:flex;align-items:center;gap:7px;';
-  diagItem.innerHTML = '🔍 Diagnóstico de dados';
-  diagItem.onclick = ()=>{ toggleUserDropdown(); showDiagnostic(); };
-
-  const logoutBtn = dropdown.querySelector('button');
-  if(logoutBtn){
-    dropdown.insertBefore(item, logoutBtn);
-    dropdown.insertBefore(diagItem, logoutBtn);
-  } else {
-    dropdown.appendChild(item);
-    dropdown.appendChild(diagItem);
-  }
+  const dropdown=document.getElementById('userDropdown');
+  if(!dropdown||document.getElementById('notifMenuItem')) return;
+  const item=document.createElement('button');
+  item.id='notifMenuItem';
+  item.style.cssText='width:100%;padding:10px 14px;background:none;border:none;border-top:1px solid var(--border);text-align:left;font-size:13px;color:var(--text2);cursor:pointer;font-family:var(--font);display:flex;align-items:center;gap:7px;';
+  item.innerHTML=`🔔 <span id="notifMenuLabel">${Notification.permission==='granted'?'Lembretes ativos ✓':'Ativar lembretes (tela bloqueada)'}</span>`;
+  item.onclick=async()=>{toggleUserDropdown();if(Notification.permission==='granted'){notify('🔔','Lembretes já ativos!');}else{await requestNotifPermission();const l=document.getElementById('notifMenuLabel');if(l)l.textContent=Notification.permission==='granted'?'Lembretes ativos ✓':'Ativar lembretes (tela bloqueada)';}};
+  const diagItem=document.createElement('button');
+  diagItem.id='diagMenuItem';
+  diagItem.style.cssText=item.style.cssText;
+  diagItem.innerHTML='🔍 Diagnóstico de dados';
+  diagItem.onclick=()=>{toggleUserDropdown();showDiagnostic();};
+  const lb=dropdown.querySelector('button');
+  if(lb){dropdown.insertBefore(item,lb);dropdown.insertBefore(diagItem,lb);}
+  else{dropdown.appendChild(item);dropdown.appendChild(diagItem);}
 }
+
 
 // Mostra estado atual dos dados para debug
 async function showDiagnostic(){
