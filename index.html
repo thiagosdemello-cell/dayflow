@@ -825,8 +825,8 @@ body{transition:background .2s,color .2s;}
 // ╔══════════════════════════════════════════════════════╗
 // ║  SUPABASE CONFIG — substitua com suas credenciais   ║
 // ╚══════════════════════════════════════════════════════╝
-const SUPABASE_URL     = 'https://ktldhmnokiehqydqzjbf.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt0bGRobW5va2llaHF5ZHF6amJmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1ODUxOTksImV4cCI6MjA5NDE2MTE5OX0.G9GXAPlnBfofkfH6K90x7vM3zDPrX5EfwHt-Ziijcng';
+const SUPABASE_URL     = 'https://SEU-PROJETO.supabase.co';
+const SUPABASE_ANON_KEY = 'sua-anon-key-aqui';
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -1409,6 +1409,12 @@ function mkCard(t){
     </div>
     <div class="task-exp${t._open?' open':''}" id="ex_${t.id}">
       <div class="ef" style="margin-bottom:10px;">
+        <div class="el">✏️ Nome da tarefa</div>
+        <input class="ei" type="text" value="${escHtml(t.name)}" data-field="name" data-tid="${t.id}"
+          style="font-size:14px;font-weight:500;"
+          placeholder="Nome da tarefa">
+      </div>
+      <div class="ef" style="margin-bottom:10px;">
         <div class="el">💬 Comentário</div>
         <textarea class="exp-notes" data-field="comment" data-tid="${t.id}"
           placeholder="Adicione um comentário que aparece como subtítulo…"
@@ -1437,18 +1443,42 @@ function mkCard(t){
     else if(re){const t2=fT(re.dataset.tid);if(t2){t2.recur=t2.recur===re.dataset.recur?'none':re.dataset.recur;saveData(t2);render();}}
   });
   div.querySelectorAll('[data-cb]').forEach(el=>el.addEventListener('keydown',e=>{if(e.key===' '||e.key==='Enter'){e.preventDefault();el.click();}}));
-  div.querySelectorAll('[data-field]').forEach(inp=>inp.addEventListener(inp.tagName==='TEXTAREA'?'input':'change',e=>{
-    const t2=fT(e.target.dataset.tid);
-    if(t2){
-      t2[e.target.dataset.field]=e.target.value;
+
+  // ── Campos do painel expand ──
+  // NUNCA chama render() aqui — isso fecharia o teclado no iOS.
+  // Salva direto no Supabase com debounce.
+  // render() só é chamado no blur (quando o usuário sai do campo).
+  div.querySelectorAll('[data-field]').forEach(inp=>{
+    const field = inp.dataset.field;
+    const isText = inp.tagName==='TEXTAREA' || inp.type==='text';
+
+    // Atualiza estado em memória e agenda save — SEM render()
+    inp.addEventListener(isText?'input':'change', e=>{
+      const t2=fT(e.target.dataset.tid);
+      if(!t2) return;
+      t2[field] = e.target.value;
+      // Reagenda notificação se horário mudou
+      if(field==='timeStart'||field==='timeEnd') scheduleTaskNotif(t2);
+      // Salva no Supabase (debounced)
       saveData(t2);
-      // Reagenda notificação se horário foi alterado
-      if(e.target.dataset.field==='timeStart'||e.target.dataset.field==='timeEnd'){
-        scheduleTaskNotif(t2);
+      cacheWriteNow();
+    });
+
+    // Ao sair do campo (blur), aí sim re-renderiza para refletir mudanças visuais
+    inp.addEventListener('blur', ()=>{
+      const t2=fT(inp.dataset.tid);
+      if(!t2) return;
+      // Só re-renderiza se o campo afeta o visual do card fechado
+      if(['name','comment','priority'].includes(field)){
+        render();
       }
-      render();
-    }
-  }));
+      // Para nome: garante que não fique vazio
+      if(field==='name' && !t2.name.trim()){
+        t2.name = inp.value = 'Sem título';
+        saveData(t2);
+      }
+    });
+  });
   return div;
 }
 
