@@ -674,7 +674,7 @@ body{transition:background .2s,color .2s;}
     </div>
 
     <!-- Card de autenticação -->
-    <div id="authCard" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:24px;box-shadow:var(--shadow-lg);">
+    <div id="authCard" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:24px;box-shadow:var(--shadow-lg);display:none;">
 
       <!-- Tabs: Entrar / Criar conta -->
       <div style="display:flex;gap:0;margin-bottom:20px;border:1px solid var(--border);border-radius:var(--r-sm);overflow:hidden;">
@@ -785,7 +785,7 @@ body{transition:background .2s,color .2s;}
     </div><!-- /authCard -->
 
     <!-- Loading (dados carregando após login) -->
-    <div id="authLoading" style="display:none;text-align:center;padding:20px 0;">
+    <div id="authLoading" style="display:block;text-align:center;padding:20px 0;">
       <div style="font-size:28px;margin-bottom:10px;animation:spin 1.2s linear infinite;display:inline-block;">🔄</div>
       <div style="font-size:14px;color:var(--text2);">Carregando seus dados…</div>
     </div>
@@ -824,8 +824,8 @@ body{transition:background .2s,color .2s;}
 // ╔══════════════════════════════════════════════════════╗
 // ║  SUPABASE CONFIG — substitua com suas credenciais   ║
 // ╚══════════════════════════════════════════════════════╝
-const SUPABASE_URL     = 'https://ktldhmnokiehqydqzjbf.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt0bGRobW5va2llaHF5ZHF6amJmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1ODUxOTksImV4cCI6MjA5NDE2MTE5OX0.G9GXAPlnBfofkfH6K90x7vM3zDPrX5EfwHt-Ziijcng';
+const SUPABASE_URL     = 'https://SEU-PROJETO.supabase.co';
+const SUPABASE_ANON_KEY = 'sua-anon-key-aqui';
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -2369,26 +2369,34 @@ function setAuthMsg(msg,isErr=true){
 }
 function showApp(){
   clearTimeout(_loadingTimer);
-  document.getElementById('authOverlay').style.display='none';
-  document.getElementById('userMenu').style.display='block';
+  document.getElementById('authOverlay').style.display  = 'none';
+  document.getElementById('userMenu').style.display     = 'block';
 }
 function showAuthScreen(){
-  document.getElementById('authOverlay').style.display='flex';
-  document.getElementById('authCard').style.display='block';
-  document.getElementById('authLoading').style.display='none';
-  document.getElementById('userMenu').style.display='none';
-  switchTab('login');
+  document.getElementById('authOverlay').style.display  = 'flex';
+  document.getElementById('authCard').style.display     = 'block';
+  document.getElementById('authLoading').style.display  = 'none';
+  document.getElementById('userMenu').style.display     = 'none';
+  // reset authLoading caso tenha sido sobrescrito pelo timer
+  const al = document.getElementById('authLoading');
+  if(!al.querySelector('div')) al.innerHTML = `
+    <div style="font-size:28px;margin-bottom:10px;animation:spin 1.2s linear infinite;display:inline-block;">🔄</div>
+    <div style="font-size:14px;color:var(--text2);">Carregando seus dados…</div>`;
 }
 let _loadingTimer = null;
 function showLoading(){
-  document.getElementById('authOverlay').style.display='flex';
-  document.getElementById('authCard').style.display='none';
-  document.getElementById('authLoading').style.display='block';
-  document.getElementById('userMenu').style.display='none';
-  // Segurança: se ficar 12s carregando, mostra botão de retry
+  // Restaura spinner se timer tiver alterado
+  const al = document.getElementById('authLoading');
+  al.innerHTML = `
+    <div style="font-size:28px;margin-bottom:10px;animation:spin 1.2s linear infinite;display:inline-block;">🔄</div>
+    <div style="font-size:14px;color:var(--text2);">Carregando seus dados…</div>`;
+  document.getElementById('authOverlay').style.display  = 'flex';
+  document.getElementById('authCard').style.display     = 'none';
+  document.getElementById('authLoading').style.display  = 'block';
+  document.getElementById('userMenu').style.display     = 'none';
   clearTimeout(_loadingTimer);
   _loadingTimer = setTimeout(()=>{
-    if(document.getElementById('authLoading').style.display==='block'){
+    if(document.getElementById('authOverlay').style.display === 'flex'){
       document.getElementById('authLoading').innerHTML = `
         <div style="font-size:28px;margin-bottom:10px;">⚠️</div>
         <div style="font-size:14px;color:var(--text2);margin-bottom:16px;">Demorou mais que o esperado.</div>
@@ -2484,13 +2492,20 @@ let pushSub = null;
 const scheduledNotifs = {};
 let notifPermission = (typeof Notification!=='undefined') ? Notification.permission : 'denied';
 
-async function registerSW(){
+// ── Registra Service Worker (nunca bloqueia o boot) ──
+function registerSW(){
   if(!('serviceWorker' in navigator)) return;
-  try{
-    swReg = await navigator.serviceWorker.register('/sw.js');
-    await navigator.serviceWorker.ready;
-    pushSub = await swReg.pushManager.getSubscription();
-  }catch(e){ console.warn('SW falhou:',e); }
+  // Fire-and-forget: não faz await, não bloqueia nada
+  navigator.serviceWorker.register('/sw.js')
+    .then(reg=>{
+      swReg = reg;
+      // Não aguarda .ready — pode travar indefinidamente no Safari
+      reg.active && (pushSub = null); // tenta restaurar depois
+      reg.addEventListener('updatefound', ()=>{});
+      // Tenta pegar subscription existente sem bloquear
+      reg.pushManager?.getSubscription().then(sub=>{ pushSub=sub; }).catch(()=>{});
+    })
+    .catch(e=>console.warn('[SW]', e));
 }
 
 function urlBase64ToUint8Array(b64){
@@ -2671,55 +2686,54 @@ async function showDiagnostic(){
 }
 
 // ═══════════════════════════════════════
-// BOOT
-// ═══════════════════════════════════════
-// BOOT
+// BOOT — entrada única, sem corridas
 // ═══════════════════════════════════════
 async function boot(){
   dark = prefsRead().theme==='dark';
   applyTheme();
-  await registerSW();
+  registerSW(); // fire-and-forget
 
-  async function startSession(user){
-    if(_bootAppCalled) return; // já iniciou
-    currentUser = user;
-    updateUserBadge(user);
-    showLoading();
-    await sbLoadAll();
-    // _safeBootApp é chamado no finally do sbLoadAll
+  // ── Passo 1: verifica se já há sessão salva ──
+  let session = null;
+  try{
+    const res = await sb.auth.getSession();
+    session = res.data?.session || null;
+  }catch(e){
+    console.warn('[boot] getSession erro:', e);
   }
 
-  // Escuta eventos futuros (login, logout, token refresh)
+  if(session){
+    // Sessão existente → entra direto sem mostrar login
+    currentUser = session.user;
+    updateUserBadge(session.user);
+    // authLoading já está visível (estado inicial do HTML)
+    await sbLoadAll();
+    // _safeBootApp chamado no finally do sbLoadAll
+  } else {
+    // Sem sessão → mostra tela de login
+    showAuthScreen();
+  }
+
+  // ── Passo 2: escuta eventos futuros ──
+  // Só para login/logout após boot inicial
   sb.auth.onAuthStateChange(async(event, session)=>{
-    console.log('[auth]', event, !!session);
-    if(event==='SIGNED_IN'){
+    if(event === 'SIGNED_IN' && session && !_bootAppCalled){
+      // Usuário acabou de fazer login manualmente
       _bootAppCalled = false;
-      currentUser = null;
-      if(session) await startSession(session.user);
-    } else if(event==='SIGNED_OUT'){
+      currentUser = session.user;
+      updateUserBadge(session.user);
+      showLoading();
+      await sbLoadAll();
+    } else if(event === 'SIGNED_OUT'){
       _bootAppCalled = false;
       appBooted = false;
       currentUser = null;
+      tasks = [];
       cancelAllNotifs();
-      if(realtimeSub){ sb.removeChannel(realtimeSub); realtimeSub=null; }
-      tasks=[];
+      if(realtimeSub){ sb.removeChannel(realtimeSub); realtimeSub = null; }
       showAuthScreen();
     }
   });
-
-  // Verifica sessão atual (caminho principal)
-  try{
-    const {data:{session}} = await sb.auth.getSession();
-    if(session){
-      await startSession(session.user);
-    } else {
-      showAuthScreen();
-    }
-  }catch(e){
-    console.error('[boot] getSession:', e);
-    showAuthScreen();
-    setAuthMsg('Erro de conexão. Verifique sua internet.');
-  }
 }
 
 boot();</script>
