@@ -407,7 +407,6 @@ body{transition:background .2s,color .2s;}
 /* Comentário como subtítulo da tarefa */
 .task-comment{
   font-size:12px;color:var(--text2);margin-top:3px;line-height:1.45;
-  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
   white-space:pre-wrap;word-break:break-word;
 }
 /* Campo de comentário no form de adição */
@@ -825,8 +824,8 @@ body{transition:background .2s,color .2s;}
 // ╔══════════════════════════════════════════════════════╗
 // ║  SUPABASE CONFIG — substitua com suas credenciais   ║
 // ╚══════════════════════════════════════════════════════╝
-const SUPABASE_URL     = 'https://ktldhmnokiehqydqzjbf.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt0bGRobW5va2llaHF5ZHF6amJmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1ODUxOTksImV4cCI6MjA5NDE2MTE5OX0.G9GXAPlnBfofkfH6K90x7vM3zDPrX5EfwHt-Ziijcng';
+const SUPABASE_URL     = 'https://SEU-PROJETO.supabase.co';
+const SUPABASE_ANON_KEY = 'sua-anon-key-aqui';
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -864,8 +863,17 @@ const saveDebounce={};
 // ═══════════════════════════════════════
 // UTILS
 // ═══════════════════════════════════════
-function todayStr(){return new Date().toISOString().slice(0,10);}
-function dAdd(ds,n){const d=new Date(ds+'T12:00:00');d.setDate(d.getDate()+n);return d.toISOString().slice(0,10);}
+// ── Fuso horário de Brasília (America/Sao_Paulo) ──
+// Todas as funções de data usam este fuso, independente
+// de onde o usuário esteja acessando o app.
+const TZ = 'America/Sao_Paulo';
+
+function nowBrasilia(){ return new Date(new Date().toLocaleString('en-US',{timeZone:TZ})); }
+function todayStr(){
+  const d = nowBrasilia();
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+function dAdd(ds,n){const d=new Date(ds+'T12:00:00');d.setDate(d.getDate()+n);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
 function dayLabel(ds){const t=todayStr(),y=dAdd(t,-1),m=dAdd(t,1);if(ds===t)return'Hoje';if(ds===y)return'Ontem';if(ds===m)return'Amanhã';return new Date(ds+'T12:00:00').toLocaleDateString('pt-BR',{weekday:'short',day:'numeric',month:'short'});}
 function daySub(ds){return new Date(ds+'T12:00:00').toLocaleDateString('pt-BR',{weekday:'long',day:'numeric',month:'long',year:'numeric'});}
 function escHtml(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
@@ -1818,9 +1826,9 @@ document.getElementById('pmClose').addEventListener('click',()=>{document.getEle
 // ═══════════════════════════════════════
 function renderWeek(){
   const grid=document.getElementById('weekGrid'),list=document.getElementById('weekList');
-  const today=new Date(),dow=today.getDay(),mon=new Date(today);mon.setDate(today.getDate()-(dow===0?6:dow-1));
+  const today=nowBrasilia(),dow=today.getDay(),mon=new Date(today);mon.setDate(today.getDate()-(dow===0?6:dow-1));
   const h=getH(),days=['Seg','Ter','Qua','Qui','Sex','Sáb','Dom'];grid.innerHTML='';
-  for(let i=0;i<7;i++){const d=new Date(mon);d.setDate(mon.getDate()+i);const ds=d.toISOString().slice(0,10),it=ds===todayStr(),e=h[ds]||{done:0,total:0,pct:0};const div=document.createElement('div');div.className='wd'+(it?' current-day':'')+(ds===cur?' active-day':'');div.innerHTML=`<div class="wdn">${days[i]}</div><div class="wdd">${d.getDate()}</div><div class="wd-bar"><div class="wd-fill" style="width:${e.pct||0}%"></div></div><div class="wd-count">${e.done||0}/${e.total||0}</div>`;div.addEventListener('click',()=>{cur=ds;document.querySelectorAll('.wd').forEach(x=>x.classList.remove('active-day'));div.classList.add('active-day');renderWeek();});grid.appendChild(div);}
+  for(let i=0;i<7;i++){const d=new Date(mon);d.setDate(mon.getDate()+i);const ds=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'),it=ds===todayStr(),e=h[ds]||{done:0,total:0,pct:0};const div=document.createElement('div');div.className='wd'+(it?' current-day':'')+(ds===cur?' active-day':'');div.innerHTML=`<div class="wdn">${days[i]}</div><div class="wdd">${d.getDate()}</div><div class="wd-bar"><div class="wd-fill" style="width:${e.pct||0}%"></div></div><div class="wd-count">${e.done||0}/${e.total||0}</div>`;div.addEventListener('click',()=>{cur=ds;document.querySelectorAll('.wd').forEach(x=>x.classList.remove('active-day'));div.classList.add('active-day');renderWeek();});grid.appendChild(div);}
   const dt=tasks.filter(t=>t.date===cur);if(!dt.length){list.innerHTML=`<div class="empty-state"><span class="es-ico">📭</span><p>Sem tarefas para ${dayLabel(cur).toLowerCase()}</p></div>`;return;}
   list.innerHTML=`<div class="sec-label">📋 ${dayLabel(cur)}</div>`;dt.forEach(t=>list.appendChild(mkCard(t)));bindDrag();
 }
@@ -2003,7 +2011,7 @@ async function checkPending(){
 function applyRecur(){
   // Só aplica se temos dados reais carregados (evita criar tarefas com lista vazia)
   if(!currentUser) return;
-  const today=todayStr(),dow=new Date().getDay(),isWD=dow>=1&&dow<=5,toAdd=[];
+  const today=todayStr(),dow=nowBrasilia().getDay(),isWD=dow>=1&&dow<=5,toAdd=[];
   tasks.filter(t=>t.recur&&t.recur!=='none').forEach(t=>{
     const alreadyExists=tasks.find(x=>
       x.name===t.name && x.date===today && x.recur===t.recur
@@ -2510,8 +2518,14 @@ async function savePushSubscription(sub){
 async function scheduleNotifServer(task){
   if(!currentUser||!isOnline||!task.timeStart||task.done||task.date!==todayStr()) return;
   const [h,m]=task.timeStart.split(':').map(Number);
-  const fireAt=new Date(); fireAt.setHours(h,m,0,0);
-  if(fireAt<=new Date()) return;
+  // Monta o horário no fuso de Brasília
+  const now = nowBrasilia();
+  const fireLocal = new Date(now);
+  fireLocal.setHours(h,m,0,0);
+  if(fireLocal<=now) return; // já passou
+  // Converte para UTC para salvar no Supabase
+  const diffMs = fireLocal - now;
+  const fireAt = new Date(Date.now() + diffMs);
   const body=task.timeEnd
     ?`${task.timeStart} → ${task.timeEnd}${task.category?' • '+task.category:''}`
     :`Agendada para ${task.timeStart}${task.category?' • '+task.category:''}`;
@@ -2538,8 +2552,9 @@ function scheduleTaskNotif(task){
   if(scheduledNotifs[task.id]){clearTimeout(scheduledNotifs[task.id]);delete scheduledNotifs[task.id];}
   if(!task.timeStart||task.done||task.date!==todayStr()) return;
   const [h,m]=task.timeStart.split(':').map(Number);
-  const target=new Date(); target.setHours(h,m,0,0);
-  const delay=target-Date.now(); if(delay<0) return;
+  const now=nowBrasilia();
+  const target=new Date(now); target.setHours(h,m,0,0);
+  const delay=target-now; if(delay<0) return;
   const title='⏰ '+task.name;
   const body=task.timeEnd
     ?`${task.timeStart} → ${task.timeEnd}${task.category?' • '+task.category:''}`
