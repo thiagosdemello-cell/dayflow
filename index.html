@@ -674,7 +674,7 @@ body{transition:background .2s,color .2s;}
     </div>
 
     <!-- Card de autenticação -->
-    <div id="authCard" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:24px;box-shadow:var(--shadow-lg);display:none;">
+    <div id="authCard" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:24px;box-shadow:var(--shadow-lg);">
 
       <!-- Tabs: Entrar / Criar conta -->
       <div style="display:flex;gap:0;margin-bottom:20px;border:1px solid var(--border);border-radius:var(--r-sm);overflow:hidden;">
@@ -785,7 +785,7 @@ body{transition:background .2s,color .2s;}
     </div><!-- /authCard -->
 
     <!-- Loading (dados carregando após login) -->
-    <div id="authLoading" style="display:block;text-align:center;padding:20px 0;">
+    <div id="authLoading" style="display:none;text-align:center;padding:20px 0;">
       <div style="font-size:28px;margin-bottom:10px;animation:spin 1.2s linear infinite;display:inline-block;">🔄</div>
       <div style="font-size:14px;color:var(--text2);">Carregando seus dados…</div>
     </div>
@@ -824,8 +824,8 @@ body{transition:background .2s,color .2s;}
 // ╔══════════════════════════════════════════════════════╗
 // ║  SUPABASE CONFIG — substitua com suas credenciais   ║
 // ╚══════════════════════════════════════════════════════╝
-const SUPABASE_URL     = 'https://ktldhmnokiehqydqzjbf.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt0bGRobW5va2llaHF5ZHF6amJmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1ODUxOTksImV4cCI6MjA5NDE2MTE5OX0.G9GXAPlnBfofkfH6K90x7vM3zDPrX5EfwHt-Ziijcng';
+const SUPABASE_URL     = 'https://SEU-PROJETO.supabase.co';
+const SUPABASE_ANON_KEY = 'sua-anon-key-aqui';
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -2686,39 +2686,35 @@ async function showDiagnostic(){
 }
 
 // ═══════════════════════════════════════
-// BOOT — entrada única, sem corridas
+// BOOT
 // ═══════════════════════════════════════
 async function boot(){
   dark = prefsRead().theme==='dark';
   applyTheme();
-  registerSW(); // fire-and-forget
+  registerSW();
 
-  // ── Passo 1: verifica se já há sessão salva ──
+  // Verifica sessão salva (login automático)
   let session = null;
   try{
     const res = await sb.auth.getSession();
-    session = res.data?.session || null;
-  }catch(e){
-    console.warn('[boot] getSession erro:', e);
-  }
+    session = res?.data?.session || null;
+  }catch(e){ console.warn('[boot] getSession:', e); }
 
   if(session){
-    // Sessão existente → entra direto sem mostrar login
+    // Sessão existente → carrega app direto
     currentUser = session.user;
     updateUserBadge(session.user);
-    // authLoading já está visível (estado inicial do HTML)
+    showLoading();
     await sbLoadAll();
-    // _safeBootApp chamado no finally do sbLoadAll
+    // showApp() é chamado dentro de _doBootApp via _safeBootApp no finally do sbLoadAll
   } else {
-    // Sem sessão → mostra tela de login
+    // Sem sessão → mostra login
     showAuthScreen();
   }
 
-  // ── Passo 2: escuta eventos futuros ──
-  // Só para login/logout após boot inicial
+  // Escuta login/logout futuros
   sb.auth.onAuthStateChange(async(event, session)=>{
-    if(event === 'SIGNED_IN' && session && !_bootAppCalled){
-      // Usuário acabou de fazer login manualmente
+    if(event === 'SIGNED_IN' && session){
       _bootAppCalled = false;
       currentUser = session.user;
       updateUserBadge(session.user);
@@ -2726,7 +2722,6 @@ async function boot(){
       await sbLoadAll();
     } else if(event === 'SIGNED_OUT'){
       _bootAppCalled = false;
-      appBooted = false;
       currentUser = null;
       tasks = [];
       cancelAllNotifs();
