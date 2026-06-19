@@ -824,8 +824,8 @@ body{transition:background .2s,color .2s;}
 // ╔══════════════════════════════════════════════════════╗
 // ║  SUPABASE CONFIG — substitua com suas credenciais   ║
 // ╚══════════════════════════════════════════════════════╝
-const SUPABASE_URL     = 'https://ktldhmnokiehqydqzjbf.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt0bGRobW5va2llaHF5ZHF6amJmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1ODUxOTksImV4cCI6MjA5NDE2MTE5OX0.G9GXAPlnBfofkfH6K90x7vM3zDPrX5EfwHt-Ziijcng';
+const SUPABASE_URL     = 'https://SEU-PROJETO.supabase.co';
+const SUPABASE_ANON_KEY = 'sua-anon-key-aqui';
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -2365,6 +2365,7 @@ function setAuthMsg(msg,isErr=true){
   el.style.background=msg?(isErr?'var(--red-s)':'var(--accent-s)'):'transparent';
 }
 function showApp(){
+  clearTimeout(_loadingTimer);
   document.getElementById('authOverlay').style.display='none';
   document.getElementById('userMenu').style.display='block';
 }
@@ -2375,11 +2376,24 @@ function showAuthScreen(){
   document.getElementById('userMenu').style.display='none';
   switchTab('login');
 }
+let _loadingTimer = null;
 function showLoading(){
   document.getElementById('authOverlay').style.display='flex';
   document.getElementById('authCard').style.display='none';
   document.getElementById('authLoading').style.display='block';
   document.getElementById('userMenu').style.display='none';
+  // Segurança: se ficar 12s carregando, mostra botão de retry
+  clearTimeout(_loadingTimer);
+  _loadingTimer = setTimeout(()=>{
+    if(document.getElementById('authLoading').style.display==='block'){
+      document.getElementById('authLoading').innerHTML = `
+        <div style="font-size:28px;margin-bottom:10px;">⚠️</div>
+        <div style="font-size:14px;color:var(--text2);margin-bottom:16px;">Demorou mais que o esperado.</div>
+        <button onclick="location.reload()" class="btn btn-a" style="padding:10px 20px;">
+          🔄 Tentar novamente
+        </button>`;
+    }
+  }, 12000);
 }
 function updateUserBadge(user){
   if(!user)return;
@@ -2656,73 +2670,91 @@ async function showDiagnostic(){
 // ═══════════════════════════════════════
 // BOOT
 // ═══════════════════════════════════════
+// BOOT
+// ═══════════════════════════════════════
 async function boot(){
   dark = prefsRead().theme==='dark';
   applyTheme();
   await registerSW();
 
-  // ── Função central que inicia sessão ──
+  // ── Inicia sessão (chamado de qualquer caminho) ──
   async function startSession(user){
     if(appBooted) return;
-    _bootAppCalled = false; // reset para nova sessão
+    appBooted = true;
+    _bootAppCalled = false;
     currentUser = user;
     updateUserBadge(user);
     showLoading();
     await sbLoadAll();
-    // bootApp é chamado dentro do finally do sbLoadAll via _safeBootApp
+    // _safeBootApp é chamado dentro do finally do sbLoadAll
   }
 
-  // ── Escuta mudanças de auth ──
+  // ── Escuta eventos de auth ──
   sb.auth.onAuthStateChange(async(event, session)=>{
-    console.log('authStateChange:', event, !!session);
+    console.log('[auth]', event, !!session);
     try{
-      if((event==='SIGNED_IN'||event==='TOKEN_REFRESHED'||event==='INITIAL_SESSION') && session){
-        // Reset flags para garantir que startSession rode mesmo após logout+login
-        if(event==='SIGNED_IN'){
-          appBooted = false;
-          _bootAppCalled = false;
-        }
+      if(event==='SIGNED_IN'){
+        // Sempre reseta para garantir que login funcione
+        appBooted = false;
+        _bootAppCalled = false;
+        currentUser = null;
         await startSession(session.user);
+
+      } else if(event==='INITIAL_SESSION'){
+        if(session && !appBooted){
+          await startSession(session.user);
+        } else if(!session && !appBooted){
+          showAuthScreen();
+        }
+
+      } else if(event==='TOKEN_REFRESHED'){
+        if(session && !appBooted){
+          await startSession(session.user);
+        }
+
       } else if(event==='SIGNED_OUT'){
         appBooted = false;
         _bootAppCalled = false;
         currentUser = null;
         cancelAllNotifs();
         if(realtimeSub){ sb.removeChannel(realtimeSub); realtimeSub=null; }
+        tasks=[];
         showAuthScreen();
+
       } else if(event==='PASSWORD_RECOVERY'){
         showAuthScreen();
         setAuthMsg('Defina sua nova senha após entrar na conta.',false);
-      } else if(event==='INITIAL_SESSION' && !session){
-        showAuthScreen();
       }
     }catch(err){
-      console.error('auth state error:', err);
-      if(!appBooted && currentUser){
-        tasks = (cacheRead()?.tasks||[]).map(t=>({priority:'none',recur:'none',_open:false,...t}));
-        totalFocusSecs = lsLoadGarden();
-        dark = prefsRead().theme==='dark';
-        _safeBootApp();
-      } else if(!currentUser){
-        showAuthScreen();
-      }
+      console.error('[auth error]', err);
+      appBooted = false;
+      _bootAppCalled = false;
+      // Mostra tela de login com erro em vez de travar
+      showAuthScreen();
+      setAuthMsg('Erro ao carregar. Tente novamente.');
     }
   });
 
-  // ── Verifica sessão existente agora (fallback para Safari iOS) ──
-  // O onAuthStateChange às vezes não dispara INITIAL_SESSION no Safari PWA
-  try{
-    const { data:{ session } } = await sb.auth.getSession();
-    if(session && !appBooted){
-      // Sessão existe mas o evento não disparou — inicia manualmente
-      await startSession(session.user);
-    } else if(!session && !appBooted){
-      showAuthScreen();
+  // ── Fallback: verifica sessão diretamente ──
+  // No Safari iOS o INITIAL_SESSION às vezes não dispara
+  // Aguarda 800ms para o onAuthStateChange ter chance de agir primeiro
+  setTimeout(async()=>{
+    if(appBooted) return; // já iniciou pelo evento
+    try{
+      const { data:{ session } } = await sb.auth.getSession();
+      if(session && !appBooted){
+        console.log('[boot] fallback getSession: sessão encontrada');
+        appBooted = false; // garante reset
+        _bootAppCalled = false;
+        await startSession(session.user);
+      } else if(!session && !appBooted){
+        showAuthScreen();
+      }
+    }catch(e){
+      console.error('[boot] getSession error:', e);
+      if(!appBooted) showAuthScreen();
     }
-  }catch(e){
-    console.error('getSession error:', e);
-    showAuthScreen();
-  }
+  }, 800);
 }
 
 boot();</script>
