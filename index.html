@@ -824,8 +824,8 @@ body{transition:background .2s,color .2s;}
 // ╔══════════════════════════════════════════════════════╗
 // ║  SUPABASE CONFIG — substitua com suas credenciais   ║
 // ╚══════════════════════════════════════════════════════╝
-const SUPABASE_URL     = 'https://ktldhmnokiehqydqzjbf.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt0bGRobW5va2llaHF5ZHF6amJmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1ODUxOTksImV4cCI6MjA5NDE2MTE5OX0.G9GXAPlnBfofkfH6K90x7vM3zDPrX5EfwHt-Ziijcng';
+const SUPABASE_URL     = 'https://SEU-PROJETO.supabase.co';
+const SUPABASE_ANON_KEY = 'sua-anon-key-aqui';
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -2399,14 +2399,22 @@ async function doLogin(){
   const pass=document.getElementById('loginPass').value;
   if(!email||!pass){setAuthMsg('Preencha e-mail e senha.');return;}
   setAuthMsg('Entrando…',false);
-  const{error}=await sb.auth.signInWithPassword({email,password:pass});
-  if(error){
-    if(error.message.includes('Invalid login')||error.message.includes('invalid_credentials'))setAuthMsg('E-mail ou senha incorretos.');
-    else if(error.message.includes('Email not confirmed'))setAuthMsg('Confirme seu e-mail antes de entrar.');
-    else setAuthMsg(error.message);
-    return;
+  try{
+    const{error}=await sb.auth.signInWithPassword({email,password:pass});
+    if(error){
+      if(error.message.includes('Invalid login')||error.message.includes('invalid_credentials'))
+        setAuthMsg('E-mail ou senha incorretos.');
+      else if(error.message.includes('Email not confirmed'))
+        setAuthMsg('Confirme seu e-mail antes de entrar.');
+      else
+        setAuthMsg('Erro: '+error.message);
+      return;
+    }
+    setAuthMsg('Carregando…',false);
+    // onAuthStateChange (SIGNED_IN) vai cuidar do resto
+  }catch(e){
+    setAuthMsg('Erro de conexão. Verifique sua internet.');
   }
-  setAuthMsg('');
 }
 
 async function doSignup(){
@@ -2669,9 +2677,15 @@ async function boot(){
     console.log('authStateChange:', event, !!session);
     try{
       if((event==='SIGNED_IN'||event==='TOKEN_REFRESHED'||event==='INITIAL_SESSION') && session){
+        // Reset flags para garantir que startSession rode mesmo após logout+login
+        if(event==='SIGNED_IN'){
+          appBooted = false;
+          _bootAppCalled = false;
+        }
         await startSession(session.user);
       } else if(event==='SIGNED_OUT'){
         appBooted = false;
+        _bootAppCalled = false;
         currentUser = null;
         cancelAllNotifs();
         if(realtimeSub){ sb.removeChannel(realtimeSub); realtimeSub=null; }
@@ -2680,17 +2694,15 @@ async function boot(){
         showAuthScreen();
         setAuthMsg('Defina sua nova senha após entrar na conta.',false);
       } else if(event==='INITIAL_SESSION' && !session){
-        // Sem sessão salva → mostra login
         showAuthScreen();
       }
     }catch(err){
       console.error('auth state error:', err);
-      // Fallback: mostra app com dados locais
       if(!appBooted && currentUser){
         tasks = (cacheRead()?.tasks||[]).map(t=>({priority:'none',recur:'none',_open:false,...t}));
         totalFocusSecs = lsLoadGarden();
-        dark = localStorage.getItem(TK)==='dark';
-        bootApp();
+        dark = prefsRead().theme==='dark';
+        _safeBootApp();
       } else if(!currentUser){
         showAuthScreen();
       }
