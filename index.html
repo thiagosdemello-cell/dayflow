@@ -2420,23 +2420,29 @@ document.addEventListener('click',e=>{if(!e.target.closest('#userMenu'))document
 // AUTH ACTIONS — email + senha
 // ═══════════════════════════════════════
 async function doLogin(){
-  const email=document.getElementById('loginEmail').value.trim();
-  const pass=document.getElementById('loginPass').value;
-  if(!email||!pass){setAuthMsg('Preencha e-mail e senha.');return;}
-  setAuthMsg('Entrando…',false);
+  const email = document.getElementById('loginEmail').value.trim();
+  const pass  = document.getElementById('loginPass').value;
+  if(!email || !pass){ setAuthMsg('Preencha e-mail e senha.'); return; }
+  setAuthMsg('Entrando…', false);
   try{
-    const{error}=await sb.auth.signInWithPassword({email,password:pass});
+    const { data, error } = await sb.auth.signInWithPassword({email, password:pass});
     if(error){
-      if(error.message.includes('Invalid login')||error.message.includes('invalid_credentials'))
+      if(error.message.includes('Invalid login') || error.message.includes('invalid_credentials'))
         setAuthMsg('E-mail ou senha incorretos.');
       else if(error.message.includes('Email not confirmed'))
         setAuthMsg('Confirme seu e-mail antes de entrar.');
       else
-        setAuthMsg('Erro: '+error.message);
+        setAuthMsg('Erro: ' + error.message);
       return;
     }
-    setAuthMsg('Carregando…',false);
-    // onAuthStateChange (SIGNED_IN) vai cuidar do resto
+    // Login OK — inicia app diretamente sem esperar onAuthStateChange
+    if(data?.user){
+      _bootAppCalled = false;
+      currentUser = data.user;
+      updateUserBadge(data.user);
+      showLoading();
+      await sbLoadAll();
+    }
   }catch(e){
     setAuthMsg('Erro de conexão. Verifique sua internet.');
   }
