@@ -824,8 +824,8 @@ body{transition:background .2s,color .2s;}
 // ╔══════════════════════════════════════════════════════╗
 // ║  SUPABASE CONFIG — substitua com suas credenciais   ║
 // ╚══════════════════════════════════════════════════════╝
-const SUPABASE_URL     = 'https://ktldhmnokiehqydqzjbf.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt0bGRobW5va2llaHF5ZHF6amJmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1ODUxOTksImV4cCI6MjA5NDE2MTE5OX0.G9GXAPlnBfofkfH6K90x7vM3zDPrX5EfwHt-Ziijcng';
+const SUPABASE_URL     = 'https://SEU-PROJETO.supabase.co';
+const SUPABASE_ANON_KEY = 'sua-anon-key-aqui';
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -975,68 +975,72 @@ function rowToTask(r){
 
 // ═══════════════════════════════════════
 // SUPABASE — LOAD (fonte da verdade)
-// Nunca usa localStorage como fallback para escrever de volta
 // ═══════════════════════════════════════
 let appBooted = false;
 let _bootAppCalled = false;
 
 async function sbLoadAll(){
-  if(!currentUser) return;
+  if(!currentUser){ showAuthScreen(); return; }
   showSync(true);
 
-  // Mostra cache enquanto Supabase carrega (só leitura, nunca re-sobe)
+  // Mostra cache enquanto carrega (só leitura)
   const cached = cacheRead();
-  if(cached && cached.tasks && cached.tasks.length > 0){
+  if(cached?.tasks?.length > 0){
     tasks = cached.tasks.map(t=>({priority:'none',recur:'none',_open:false,...t}));
-    render(); // renderiza cache imediatamente
   }
 
+  // Safety timer — se Supabase não responder em 8s, libera com cache
+  let timedOut = false;
+  const safetyTimer = setTimeout(()=>{
+    timedOut = true;
+    console.warn('[sbLoadAll] timeout — usando cache');
+    showSync(false);
+    if(!tasks.length){
+      const h = getH();
+      const allSnap = [];
+      Object.values(h).forEach(d=>{ if(d.snapshot) allSnap.push(...d.snapshot); });
+      if(allSnap.length) tasks = allSnap.map(t=>({priority:'none',recur:'none',_open:false,...t}));
+    }
+    dark = prefsRead().theme==='dark';
+    totalFocusSecs = lsLoadGarden();
+    _safeBootApp();
+  }, 8000);
+
   try{
-    // 1. Tarefas — fonte da verdade é o Supabase
     const {data:rows, error:tErr} = await sb.from('tasks')
       .select('*').eq('user_id', currentUser.id)
       .order('sort_order').order('created_at');
 
-    if(tErr) throw new Error('Erro ao carregar tarefas: ' + tErr.message);
+    if(timedOut) return; // safety timer já agiu
+    if(tErr) throw new Error(tErr.message);
 
     tasks = (rows||[]).map(rowToTask);
+    if(tasks.length > 0) cacheWrite({tasks, ts:Date.now()});
 
-    // Atualiza cache APÓS confirmar dados do Supabase
-    if(tasks.length > 0){
-      cacheWrite({ tasks, ts: Date.now() });
-    }
-
-    // 2. Jardim
     const {data:g} = await sb.from('garden')
-      .select('focus_seconds').eq('user_id', currentUser.id).maybeSingle();
+      .select('focus_seconds').eq('user_id',currentUser.id).maybeSingle();
     totalFocusSecs = g ? (g.focus_seconds||0) : lsLoadGarden();
     lsSaveGarden();
 
-    // 3. Tema
     const {data:p} = await sb.from('preferences')
-      .select('theme').eq('user_id', currentUser.id).maybeSingle();
-    if(p){ dark = p.theme==='dark'; prefsWrite({theme: p.theme}); }
-    else { dark = prefsRead().theme==='dark'; }
-
-    showSync(false);
-    _safeBootApp();
+      .select('theme').eq('user_id',currentUser.id).maybeSingle();
+    if(p){ dark=p.theme==='dark'; prefsWrite({theme:p.theme}); }
+    else { dark=prefsRead().theme==='dark'; }
 
   }catch(err){
-    console.error('sbLoadAll erro:', err);
-    showSync(false);
-
-    // Se há cache válido, usa-o (mas NÃO re-sobe ao Supabase)
-    if(cached && cached.tasks && cached.tasks.length > 0){
+    if(timedOut) return;
+    console.error('[sbLoadAll]', err);
+    // Usa cache se disponível
+    if(cached?.tasks?.length > 0){
       tasks = cached.tasks.map(t=>({priority:'none',recur:'none',_open:false,...t}));
-      totalFocusSecs = lsLoadGarden();
-      dark = prefsRead().theme==='dark';
-      _safeBootApp();
-      // Avisa que está em modo offline/cache
-      setTimeout(()=> notify('⚠️','Carregando do cache — dados podem estar desatualizados'), 500);
-    } else {
-      // Sem cache E sem Supabase — mostra erro em vez de estado vazio
+    }
+    dark = prefsRead().theme==='dark';
+    totalFocusSecs = lsLoadGarden();
+  }finally{
+    if(!timedOut){
+      clearTimeout(safetyTimer);
       showSync(false);
-      _showLoadError(err.message);
+      _safeBootApp();
     }
   }
 }
@@ -2677,7 +2681,6 @@ async function boot(){
   applyTheme();
   await registerSW();
 
-  // ── Inicia sessão (chamado de qualquer caminho) ──
   async function startSession(user){
     if(appBooted) return;
     appBooted = true;
@@ -2686,75 +2689,41 @@ async function boot(){
     updateUserBadge(user);
     showLoading();
     await sbLoadAll();
-    // _safeBootApp é chamado dentro do finally do sbLoadAll
   }
 
-  // ── Escuta eventos de auth ──
+  // Escuta eventos futuros (login, logout, token refresh)
   sb.auth.onAuthStateChange(async(event, session)=>{
     console.log('[auth]', event, !!session);
-    try{
-      if(event==='SIGNED_IN'){
-        // Sempre reseta para garantir que login funcione
-        appBooted = false;
-        _bootAppCalled = false;
-        currentUser = null;
-        await startSession(session.user);
-
-      } else if(event==='INITIAL_SESSION'){
-        if(session && !appBooted){
-          await startSession(session.user);
-        } else if(!session && !appBooted){
-          showAuthScreen();
-        }
-
-      } else if(event==='TOKEN_REFRESHED'){
-        if(session && !appBooted){
-          await startSession(session.user);
-        }
-
-      } else if(event==='SIGNED_OUT'){
-        appBooted = false;
-        _bootAppCalled = false;
-        currentUser = null;
-        cancelAllNotifs();
-        if(realtimeSub){ sb.removeChannel(realtimeSub); realtimeSub=null; }
-        tasks=[];
-        showAuthScreen();
-
-      } else if(event==='PASSWORD_RECOVERY'){
-        showAuthScreen();
-        setAuthMsg('Defina sua nova senha após entrar na conta.',false);
-      }
-    }catch(err){
-      console.error('[auth error]', err);
+    if(event==='SIGNED_IN'){
+      // Novo login: reseta tudo e inicia
       appBooted = false;
       _bootAppCalled = false;
-      // Mostra tela de login com erro em vez de travar
+      currentUser = null;
+      if(session) await startSession(session.user);
+    } else if(event==='SIGNED_OUT'){
+      appBooted = false;
+      _bootAppCalled = false;
+      currentUser = null;
+      cancelAllNotifs();
+      if(realtimeSub){ sb.removeChannel(realtimeSub); realtimeSub=null; }
+      tasks=[];
       showAuthScreen();
-      setAuthMsg('Erro ao carregar. Tente novamente.');
     }
   });
 
-  // ── Fallback: verifica sessão diretamente ──
-  // No Safari iOS o INITIAL_SESSION às vezes não dispara
-  // Aguarda 800ms para o onAuthStateChange ter chance de agir primeiro
-  setTimeout(async()=>{
-    if(appBooted) return; // já iniciou pelo evento
-    try{
-      const { data:{ session } } = await sb.auth.getSession();
-      if(session && !appBooted){
-        console.log('[boot] fallback getSession: sessão encontrada');
-        appBooted = false; // garante reset
-        _bootAppCalled = false;
-        await startSession(session.user);
-      } else if(!session && !appBooted){
-        showAuthScreen();
-      }
-    }catch(e){
-      console.error('[boot] getSession error:', e);
-      if(!appBooted) showAuthScreen();
+  // Verifica sessão atual (caminho principal)
+  try{
+    const {data:{session}} = await sb.auth.getSession();
+    if(session){
+      await startSession(session.user);
+    } else {
+      showAuthScreen();
     }
-  }, 800);
+  }catch(e){
+    console.error('[boot] getSession:', e);
+    showAuthScreen();
+    setAuthMsg('Erro de conexão. Verifique sua internet.');
+  }
 }
 
 boot();</script>
