@@ -824,8 +824,8 @@ body{transition:background .2s,color .2s;}
 // ╔══════════════════════════════════════════════════════╗
 // ║  SUPABASE CONFIG — substitua com suas credenciais   ║
 // ╚══════════════════════════════════════════════════════╝
-const SUPABASE_URL     = 'https://ktldhmnokiehqydqzjbf.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt0bGRobW5va2llaHF5ZHF6amJmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1ODUxOTksImV4cCI6MjA5NDE2MTE5OX0.G9GXAPlnBfofkfH6K90x7vM3zDPrX5EfwHt-Ziijcng';
+const SUPABASE_URL     = 'https://SEU-PROJETO.supabase.co';
+const SUPABASE_ANON_KEY = 'sua-anon-key-aqui';
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -1084,12 +1084,11 @@ function _loadFromCacheEmergency(){
 function _safeBootApp(){
   if(_bootAppCalled) return;
   _bootAppCalled = true;
-  bootApp();
+  _doBootApp();
 }
 
-async function bootApp(){
-  if(appBooted) return;
-  appBooted = true;
+async function _doBootApp(){
+  clearTimeout(_loadingTimer);
   applyTheme();
   applyRecur();
   cur = todayStr();
@@ -2462,11 +2461,11 @@ async function doForgot(){
 
 async function doLogout(){
   document.getElementById('userDropdown').style.display='none';
-  appBooted = false;
   _bootAppCalled = false;
+  appBooted = false;
   cancelAllNotifs();
   await sb.auth.signOut();
-  tasks=[];totalFocusSecs=0;
+  tasks=[]; totalFocusSecs=0;
 }
 
 // ═══════════════════════════════════════
@@ -2682,27 +2681,24 @@ async function boot(){
   await registerSW();
 
   async function startSession(user){
-    if(appBooted) return;
-    appBooted = true;
-    _bootAppCalled = false;
+    if(_bootAppCalled) return; // já iniciou
     currentUser = user;
     updateUserBadge(user);
     showLoading();
     await sbLoadAll();
+    // _safeBootApp é chamado no finally do sbLoadAll
   }
 
   // Escuta eventos futuros (login, logout, token refresh)
   sb.auth.onAuthStateChange(async(event, session)=>{
     console.log('[auth]', event, !!session);
     if(event==='SIGNED_IN'){
-      // Novo login: reseta tudo e inicia
-      appBooted = false;
       _bootAppCalled = false;
       currentUser = null;
       if(session) await startSession(session.user);
     } else if(event==='SIGNED_OUT'){
-      appBooted = false;
       _bootAppCalled = false;
+      appBooted = false;
       currentUser = null;
       cancelAllNotifs();
       if(realtimeSub){ sb.removeChannel(realtimeSub); realtimeSub=null; }
