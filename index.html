@@ -824,8 +824,8 @@ body{transition:background .2s,color .2s;}
 // ╔══════════════════════════════════════════════════════╗
 // ║  SUPABASE CONFIG — substitua com suas credenciais   ║
 // ╚══════════════════════════════════════════════════════╝
-const SUPABASE_URL     = 'https://ktldhmnokiehqydqzjbf.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt0bGRobW5va2llaHF5ZHF6amJmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1ODUxOTksImV4cCI6MjA5NDE2MTE5OX0.G9GXAPlnBfofkfH6K90x7vM3zDPrX5EfwHt-Ziijcng';
+const SUPABASE_URL     = 'https://SEU-PROJETO.supabase.co';
+const SUPABASE_ANON_KEY = 'sua-anon-key-aqui';
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -863,15 +863,19 @@ const saveDebounce={};
 // ═══════════════════════════════════════
 // UTILS
 // ═══════════════════════════════════════
-// ── Fuso horário de Brasília (America/Sao_Paulo) ──
-// Todas as funções de data usam este fuso, independente
-// de onde o usuário esteja acessando o app.
-const TZ = 'America/Sao_Paulo';
-
-function nowBrasilia(){ return new Date(new Date().toLocaleString('en-US',{timeZone:TZ})); }
+// ── Data no fuso de Brasília (UTC-3) ──
+function nowBrasilia(){
+  // Usa offset fixo UTC-3 — mais compatível com Safari iOS antigo
+  // que toLocaleString com timeZone que pode falhar
+  const now = new Date();
+  const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
+  return new Date(utc + (-3 * 3600000));
+}
 function todayStr(){
   const d = nowBrasilia();
-  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  return d.getFullYear()+'-'
+    +String(d.getMonth()+1).padStart(2,'0')+'-'
+    +String(d.getDate()).padStart(2,'0');
 }
 function dAdd(ds,n){const d=new Date(ds+'T12:00:00');d.setDate(d.getDate()+n);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
 function dayLabel(ds){const t=todayStr(),y=dAdd(t,-1),m=dAdd(t,1);if(ds===t)return'Hoje';if(ds===y)return'Ontem';if(ds===m)return'Amanhã';return new Date(ds+'T12:00:00').toLocaleDateString('pt-BR',{weekday:'short',day:'numeric',month:'short'});}
