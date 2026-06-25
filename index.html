@@ -827,8 +827,8 @@ body{-webkit-text-size-adjust:100%;touch-action:pan-x pan-y;overscroll-behavior:
 // ╔══════════════════════════════════════════════════════╗
 // ║  SUPABASE CONFIG — substitua com suas credenciais   ║
 // ╚══════════════════════════════════════════════════════╝
-const SUPABASE_URL     = 'https://ktldhmnokiehqydqzjbf.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt0bGRobW5va2llaHF5ZHF6amJmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1ODUxOTksImV4cCI6MjA5NDE2MTE5OX0.G9GXAPlnBfofkfH6K90x7vM3zDPrX5EfwHt-Ziijcng';
+const SUPABASE_URL     = 'https://SEU-PROJETO.supabase.co';
+const SUPABASE_ANON_KEY = 'sua-anon-key-aqui';
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -2543,11 +2543,15 @@ async function requestNotifPermission(){
   if(Notification.permission==='denied'){
     notify('⚠️','Bloqueadas — ative em Ajustes > Safari > Notificações'); return false;
   }
-  const result = await Notification.requestPermission();
-  notifPermission = result;
-  if(result!=='granted'){ notify('ℹ️','Permissão não concedida'); return false; }
 
-  if(!swReg){ notify('⚠️','Service Worker não pronto'); return false; }
+  // Pede permissão se ainda não foi concedida
+  if(Notification.permission !== 'granted'){
+    const result = await Notification.requestPermission();
+    notifPermission = result;
+    if(result!=='granted'){ notify('ℹ️','Permissão não concedida'); return false; }
+  }
+
+  if(!swReg){ notify('⚠️','Service Worker não pronto — reabra o app'); return false; }
 
   if(VAPID_PUBLIC_KEY==='COLE_SUA_VAPID_PUBLIC_KEY_AQUI'){
     notify('🔔','Lembretes ativados (apenas com app aberto)');
@@ -2555,18 +2559,26 @@ async function requestNotifPermission(){
   }
 
   try{
+    notify('⏳','Registrando dispositivo…', false);
+
+    // Cancela subscription antiga se existir
+    const existing = await swReg.pushManager.getSubscription();
+    if(existing) await existing.unsubscribe();
+
+    // Cria nova subscription
     pushSub = await swReg.pushManager.subscribe({
       userVisibleOnly:true,
       applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
     });
+
+    // Salva no Supabase
     await savePushSubscription(pushSub);
-    notify('🔔','Lembretes ativados! Você receberá notificações na tela bloqueada.');
+    notify('🔔','✅ Dispositivo registrado! Notificações na tela bloqueada ativadas.');
     await scheduleAllNotifsServer();
     return true;
   }catch(e){
     console.error('Push subscribe error:', e);
-    // Mostra erro específico para diagnóstico
-    notify('❌','Erro ao ativar: '+String(e).slice(0,80));
+    notify('❌','Erro ao registrar: '+String(e).slice(0,80));
     scheduleAllNotifs();
     return false;
   }
@@ -2664,8 +2676,13 @@ function addNotifMenuItem(){
   const item=document.createElement('button');
   item.id='notifMenuItem';
   item.style.cssText='width:100%;padding:10px 14px;background:none;border:none;border-top:1px solid var(--border);text-align:left;font-size:13px;color:var(--text2);cursor:pointer;font-family:var(--font);display:flex;align-items:center;gap:7px;';
-  item.innerHTML=`🔔 <span id="notifMenuLabel">${Notification.permission==='granted'?'Lembretes ativos ✓':'Ativar lembretes (tela bloqueada)'}</span>`;
-  item.onclick=async()=>{toggleUserDropdown();if(Notification.permission==='granted'){notify('🔔','Lembretes já ativos!');}else{await requestNotifPermission();const l=document.getElementById('notifMenuLabel');if(l)l.textContent=Notification.permission==='granted'?'Lembretes ativos ✓':'Ativar lembretes (tela bloqueada)';}};
+  item.innerHTML=`🔔 <span id="notifMenuLabel">${Notification.permission==='granted'?'Reativar lembretes (tela bloqueada)':'Ativar lembretes (tela bloqueada)'}</span>`;
+  item.onclick=async()=>{
+    toggleUserDropdown();
+    await requestNotifPermission();
+    const lbl=document.getElementById('notifMenuLabel');
+    if(lbl) lbl.textContent='Reativar lembretes (tela bloqueada)';
+  };;
   const diagItem=document.createElement('button');
   diagItem.id='diagMenuItem';
   diagItem.style.cssText=item.style.cssText;
