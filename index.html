@@ -67,7 +67,7 @@ body{-webkit-text-size-adjust:100%;touch-action:pan-x pan-y;overscroll-behavior:
 .nav-btn.active{background:var(--accent-s);opacity:1;}
 .tip{position:absolute;left:54px;top:50%;transform:translateY(-50%);background:var(--text);color:var(--surface);padding:5px 10px;border-radius:6px;font-size:12px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .15s;font-family:var(--font);z-index:300;}
 .nav-btn:hover .tip{opacity:1;}
-.sidebar-bottom{margin-top:auto;display:flex;flex-direction:column;align-items:center;gap:6px;}
+.sidebar-bottom{margin-top:auto;margin-bottom:19px;display:flex;flex-direction:column;align-items:center;gap:6px;}
 .theme-btn{width:40px;height:40px;border-radius:10px;border:1px solid var(--border);background:var(--surface2);cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center;transition:all .2s;}
 
 /* MAIN */
@@ -827,8 +827,8 @@ body{-webkit-text-size-adjust:100%;touch-action:pan-x pan-y;overscroll-behavior:
 // ╔══════════════════════════════════════════════════════╗
 // ║  SUPABASE CONFIG — substitua com suas credenciais   ║
 // ╚══════════════════════════════════════════════════════╝
-const SUPABASE_URL     = 'https://ktldhmnokiehqydqzjbf.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt0bGRobW5va2llaHF5ZHF6amJmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1ODUxOTksImV4cCI6MjA5NDE2MTE5OX0.G9GXAPlnBfofkfH6K90x7vM3zDPrX5EfwHt-Ziijcng';
+const SUPABASE_URL     = 'https://SEU-PROJETO.supabase.co';
+const SUPABASE_ANON_KEY = 'sua-anon-key-aqui';
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -2062,15 +2062,14 @@ function renderHistory(dateStr){
   const picker = document.getElementById('histDatePicker');
   if(picker) picker.value = histSelectedDate;
 
-  // Atalhos: todos os dias com tarefas (ao vivo + histórico salvo)
-  const h = getH();
-  const datesLive = [...new Set(tasks.map(t=>t.date))];
-  const datesHist = Object.keys(h).filter(d=>h[d]?.total>0||h[d]?.snapshot?.length>0);
-  const allDates  = [...new Set([...datesLive,...datesHist])].sort().reverse();
+  // Atalhos rápidos: exatamente 5 dias — Hoje, Ontem e os 3 dias anteriores.
+  // Para acessar dias mais antigos, usar o seletor de calendário acima.
+  const quickDays = [];
+  for(let i=0; i<5; i++){ quickDays.push(dAdd(todayStr(), -i)); }
 
   const qb = document.getElementById('histQuickBtns');
   if(qb){
-    qb.innerHTML = allDates.slice(0,10).map(d=>`
+    qb.innerHTML = quickDays.map(d=>`
       <button class="hist-quick-btn${d===histSelectedDate?' active':''}"
         onclick="renderHistory('${d}')">${dayLabel(d)}</button>`).join('');
   }
