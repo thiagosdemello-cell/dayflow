@@ -67,7 +67,7 @@ body{-webkit-text-size-adjust:100%;touch-action:pan-x pan-y;overscroll-behavior:
 .nav-btn.active{background:var(--accent-s);opacity:1;}
 .tip{position:absolute;left:54px;top:50%;transform:translateY(-50%);background:var(--text);color:var(--surface);padding:5px 10px;border-radius:6px;font-size:12px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .15s;font-family:var(--font);z-index:300;}
 .nav-btn:hover .tip{opacity:1;}
-.sidebar-bottom{margin-top:auto;margin-bottom:19px;display:flex;flex-direction:column;align-items:center;gap:6px;}
+.sidebar-bottom{margin-top:auto;margin-bottom:38px;display:flex;flex-direction:column;align-items:center;gap:6px;}
 .theme-btn{width:40px;height:40px;border-radius:10px;border:1px solid var(--border);background:var(--surface2);cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center;transition:all .2s;}
 
 /* MAIN */
@@ -827,8 +827,8 @@ body{-webkit-text-size-adjust:100%;touch-action:pan-x pan-y;overscroll-behavior:
 // ╔══════════════════════════════════════════════════════╗
 // ║  SUPABASE CONFIG — substitua com suas credenciais   ║
 // ╚══════════════════════════════════════════════════════╝
-const SUPABASE_URL     = 'https://ktldhmnokiehqydqzjbf.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt0bGRobW5va2llaHF5ZHF6amJmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1ODUxOTksImV4cCI6MjA5NDE2MTE5OX0.G9GXAPlnBfofkfH6K90x7vM3zDPrX5EfwHt-Ziijcng';
+const SUPABASE_URL     = 'https://SEU-PROJETO.supabase.co';
+const SUPABASE_ANON_KEY = 'sua-anon-key-aqui';
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -956,26 +956,38 @@ function lsLoadGarden(){ return parseInt(localStorage.getItem('df_garden')||'0')
 // SUPABASE — mappers
 // ═══════════════════════════════════════
 function taskToRow(t, uid){
+  // Guarda desc e comment no campo description com separador SEMPRE presente,
+  // mesmo que um deles esteja vazio — assim o comentário nunca "vira" nota.
+  const desc = t.desc || '';
+  const comment = t.comment || '';
   return{
     id:t.id, user_id:uid, name:t.name, done:t.done,
     date:t.date, priority:t.priority||'none', recur:t.recur||'none',
     category:t.category||'', time_start:t.timeStart||'',
-    time_end:t.timeEnd||'', description:t.desc||'',
+    time_end:t.timeEnd||'',
     sort_order:t._order||0,
-    // comment salvo no campo description com separador especial
-    // para não precisar alterar o schema do banco
-    description: [t.desc||'', t.comment||''].filter(Boolean).join('\n___COMMENT___\n')
+    // Separador sempre presente: "desc___COMMENT___comment"
+    description: desc + '\n___COMMENT___\n' + comment
   };
 }
 function rowToTask(r){
   // Separa desc e comment do campo description
-  const parts = (r.description||'').split('\n___COMMENT___\n');
+  const raw = r.description || '';
+  let desc = '', comment = '';
+  if(raw.includes('\n___COMMENT___\n')){
+    const idx = raw.indexOf('\n___COMMENT___\n');
+    desc = raw.slice(0, idx);
+    comment = raw.slice(idx + '\n___COMMENT___\n'.length);
+  } else {
+    // Tarefa antiga sem separador — tudo é desc
+    desc = raw;
+  }
   return{
     id:r.id, name:r.name, done:r.done, date:r.date,
     priority:r.priority||'none', recur:r.recur||'none',
     category:r.category||'', timeStart:r.time_start||'',
-    timeEnd:r.time_end||'', desc:parts[0]||'',
-    comment:parts[1]||'',
+    timeEnd:r.time_end||'', desc:desc,
+    comment:comment,
     _order:r.sort_order||0, _open:false, _if:undefined
   };
 }
@@ -2497,7 +2509,7 @@ async function doLogout(){
 // ⚠️ SUBSTITUA pela sua chave pública VAPID
 // Gere em: https://web-push-codelab.glitch.me/
 // ou: npx web-push generate-vapid-keys
-const VAPID_PUBLIC_KEY = 'COLE_SUA_VAPID_PUBLIC_KEY_AQUI';
+const VAPID_PUBLIC_KEY = 'BHwuL4J7zYXGbfTWGyyr2LC6nWODGeS5UoTc0LgE7HLL2fd9LkzCnlmQ4XDYtQMg64N0klVerngHP97aRKi2HZ8';
 
 let swReg = null;
 let pushSub = null;
