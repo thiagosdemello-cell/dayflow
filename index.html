@@ -2,7 +2,7 @@
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#F6F5F1" id="metaThemeColor">
 <meta name="color-scheme" content="light" id="metaColorScheme">
 <!-- PWA / iOS -->
@@ -54,6 +54,8 @@ html,body{
 }
 body{transition:background .2s,color .2s;}
 .layout{display:flex;min-height:100vh;}
+html{-webkit-text-size-adjust:100%;text-size-adjust:100%;touch-action:pan-x pan-y;}
+body{-webkit-text-size-adjust:100%;touch-action:pan-x pan-y;overscroll-behavior:none;}
 
 /* SIDEBAR */
 .sidebar{width:68px;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:center;padding:16px 0 20px;position:fixed;top:0;left:0;bottom:0;z-index:50;transition:background .2s;}
@@ -70,7 +72,7 @@ body{transition:background .2s,color .2s;}
 
 /* MAIN */
 .main{margin-left:68px;flex:1;}
-.view{display:none;padding:28px 32px;min-height:100vh;max-width:860px;}
+.view{display:none;padding:16px 32px 28px;min-height:100vh;max-width:860px;}
 .view.active{display:block;}
 
 /* BUTTONS */
@@ -441,6 +443,22 @@ body{transition:background .2s,color .2s;}
 </nav>
 
 <main class="main">
+  <!-- USER MENU — no topo do conteúdo, alinhado à direita, sem sobrepor nada -->
+  <div id="userMenu" style="display:none;justify-content:flex-end;padding:14px 32px 0;max-width:860px;">
+    <div style="position:relative;">
+      <button onclick="toggleUserDropdown()" style="background:var(--surface);border:1px solid var(--border);border-radius:99px;padding:6px 12px 6px 8px;display:flex;align-items:center;gap:7px;cursor:pointer;box-shadow:var(--shadow);font-family:var(--font);">
+        <div id="userAvatar" style="width:26px;height:26px;border-radius:50%;background:var(--accent);color:#fff;font-size:12px;font-weight:600;display:flex;align-items:center;justify-content:center;">?</div>
+        <span id="userLabel" style="font-size:12px;color:var(--text2);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">conta</span>
+        <span style="font-size:10px;color:var(--text3);">▾</span>
+      </button>
+      <div id="userDropdown" style="display:none;position:absolute;right:0;top:42px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-sm);box-shadow:var(--shadow-lg);min-width:180px;overflow:hidden;z-index:100;">
+        <div id="userDropEmail" style="padding:10px 14px;font-size:12px;color:var(--text3);border-bottom:1px solid var(--border);font-family:var(--mono);word-break:break-all;"></div>
+        <button onclick="doLogout()" style="width:100%;padding:10px 14px;background:none;border:none;text-align:left;font-size:13px;color:var(--red);cursor:pointer;font-family:var(--font);display:flex;align-items:center;gap:7px;">
+          🚪 Sair da conta
+        </button>
+      </div>
+    </div>
+  </div>
   <!-- TASKS -->
   <section class="view active" id="view-tasks">
     <div class="day-nav">
@@ -796,21 +814,6 @@ body{transition:background .2s,color .2s;}
 <!-- SYNC STATUS BAR -->
 <div id="syncBar" style="display:none;position:fixed;top:0;left:68px;right:0;height:3px;background:var(--accent);z-index:300;animation:syncPulse 1.2s infinite ease-in-out;"></div>
 
-<!-- USER MENU (top-right when logged in) -->
-<div id="userMenu" style="display:none;position:fixed;top:12px;right:16px;z-index:60;">
-  <button onclick="toggleUserDropdown()" style="background:var(--surface);border:1px solid var(--border);border-radius:99px;padding:6px 12px 6px 8px;display:flex;align-items:center;gap:7px;cursor:pointer;box-shadow:var(--shadow);font-family:var(--font);">
-    <div id="userAvatar" style="width:26px;height:26px;border-radius:50%;background:var(--accent);color:#fff;font-size:12px;font-weight:600;display:flex;align-items:center;justify-content:center;">?</div>
-    <span id="userLabel" style="font-size:12px;color:var(--text2);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">conta</span>
-    <span style="font-size:10px;color:var(--text3);">▾</span>
-  </button>
-  <div id="userDropdown" style="display:none;position:absolute;right:0;top:42px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-sm);box-shadow:var(--shadow-lg);min-width:180px;overflow:hidden;">
-    <div id="userDropEmail" style="padding:10px 14px;font-size:12px;color:var(--text3);border-bottom:1px solid var(--border);font-family:var(--mono);word-break:break-all;"></div>
-    <button onclick="doLogout()" style="width:100%;padding:10px 14px;background:none;border:none;text-align:left;font-size:13px;color:var(--red);cursor:pointer;font-family:var(--font);display:flex;align-items:center;gap:7px;">
-      🚪 Sair da conta
-    </button>
-  </div>
-</div>
-
 <style>
 @keyframes syncPulse{0%,100%{opacity:.4;}50%{opacity:1;}}
 @keyframes spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}
@@ -824,8 +827,8 @@ body{transition:background .2s,color .2s;}
 // ╔══════════════════════════════════════════════════════╗
 // ║  SUPABASE CONFIG — substitua com suas credenciais   ║
 // ╚══════════════════════════════════════════════════════╝
-const SUPABASE_URL     = 'https://ktldhmnokiehqydqzjbf.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt0bGRobW5va2llaHF5ZHF6amJmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1ODUxOTksImV4cCI6MjA5NDE2MTE5OX0.G9GXAPlnBfofkfH6K90x7vM3zDPrX5EfwHt-Ziijcng';
+const SUPABASE_URL     = 'https://SEU-PROJETO.supabase.co';
+const SUPABASE_ANON_KEY = 'sua-anon-key-aqui';
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -2374,7 +2377,7 @@ function setAuthMsg(msg,isErr=true){
 function showApp(){
   clearTimeout(_loadingTimer);
   document.getElementById('authOverlay').style.display  = 'none';
-  document.getElementById('userMenu').style.display     = 'block';
+  document.getElementById('userMenu').style.display     = 'flex';
 }
 function showAuthScreen(){
   document.getElementById('authOverlay').style.display  = 'flex';
@@ -2740,6 +2743,19 @@ async function boot(){
     }
   });
 }
+
+// ── Bloqueia zoom no iOS (pinça e duplo-toque) ──
+document.addEventListener('gesturestart', e=>e.preventDefault());
+document.addEventListener('gesturechange', e=>e.preventDefault());
+document.addEventListener('gestureend', e=>e.preventDefault());
+let _lastTouchEnd = 0;
+document.addEventListener('touchend', e=>{
+  const now = Date.now();
+  if(now - _lastTouchEnd <= 300){ e.preventDefault(); }
+  _lastTouchEnd = now;
+}, { passive:false });
+// Bloqueia duplo-toque para zoom mantendo o toque normal
+document.addEventListener('dblclick', e=>e.preventDefault());
 
 boot();</script>
 </body>
