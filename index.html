@@ -827,8 +827,8 @@ body{-webkit-text-size-adjust:100%;touch-action:pan-x pan-y;overscroll-behavior:
 // ╔══════════════════════════════════════════════════════╗
 // ║  SUPABASE CONFIG — substitua com suas credenciais   ║
 // ╚══════════════════════════════════════════════════════╝
-const SUPABASE_URL     = 'https://ktldhmnokiehqydqzjbf.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt0bGRobW5va2llaHF5ZHF6amJmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1ODUxOTksImV4cCI6MjA5NDE2MTE5OX0.G9GXAPlnBfofkfH6K90x7vM3zDPrX5EfwHt-Ziijcng';
+const SUPABASE_URL     = 'https://SEU-PROJETO.supabase.co';
+const SUPABASE_ANON_KEY = 'sua-anon-key-aqui';
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -1026,15 +1026,56 @@ async function sbLoadAll(){
   }, 8000);
 
   try{
-    const {data:rows, error:tErr} = await sb.from('tasks')
-      .select('*').eq('user_id', currentUser.id)
-      .order('sort_order').order('created_at');
+    // Primeiro verifica COUNT para distinguir "vazio real" de "erro silencioso"
+    const {count, error:cErr} = await sb.from('tasks')
+      .select('*', {count:'exact', head:true})
+      .eq('user_id', currentUser.id);
 
-    if(timedOut) return; // safety timer já agiu
-    if(tErr) throw new Error(tErr.message);
+    if(timedOut) return;
+    if(cErr) throw new Error(cErr.message);
 
-    tasks = (rows||[]).map(rowToTask);
-    if(tasks.length > 0) cacheWrite({tasks, ts:Date.now()});
+    const realCount = count ?? 0;
+
+    // Só busca os dados se realmente há tarefas no banco
+    if(realCount > 0){
+      const {data:rows, error:tErr} = await sb.from('tasks')
+        .select('*').eq('user_id', currentUser.id)
+        .order('sort_order').order('created_at');
+
+      if(timedOut) return;
+      if(tErr) throw new Error(tErr.message);
+
+      const loaded = (rows||[]).map(rowToTask);
+
+      // Proteção crítica: só atualiza se carregou dados reais
+      if(loaded.length > 0){
+        tasks = loaded;
+        cacheWrite({tasks, ts:Date.now()});
+      } else if(cached?.tasks?.length > 0){
+        // Banco diz que tem dados mas não veio nada — usa cache
+        console.warn('[sbLoadAll] banco disse count='+realCount+' mas retornou 0 linhas — usando cache');
+        tasks = cached.tasks.map(t=>({priority:'none',recur:'none',_open:false,...t}));
+      }
+    } else {
+      // Banco genuinamente vazio
+      // Se temos cache com dados, algo está errado — mantém cache e avisa
+      if(cached?.tasks?.length > 0){
+        console.warn('[sbLoadAll] Supabase vazio mas cache tem', cached.tasks.length, 'tarefas — mantendo cache');
+        tasks = cached.tasks.map(t=>({priority:'none',recur:'none',_open:false,...t}));
+        // Re-sobe cache para o Supabase (recuperação de dados)
+        setTimeout(async()=>{
+          if(!currentUser || !isOnline) return;
+          const rows = tasks.map((t,i)=>taskToRow({...t,_order:i}, currentUser.id));
+          const {error} = await sb.from('tasks').upsert(rows, {onConflict:'id'});
+          if(!error){
+            console.log('[sbLoadAll] recuperação: re-subiu', rows.length, 'tarefas ao Supabase');
+            notify('🔄','Tarefas recuperadas do backup local!');
+          }
+        }, 2000);
+      } else {
+        tasks = []; // genuinamente sem tarefas (conta nova)
+      }
+    }
 
     const {data:g} = await sb.from('garden')
       .select('focus_seconds').eq('user_id',currentUser.id).maybeSingle();
@@ -1275,14 +1316,19 @@ function subscribeRealtime(){
           else { tasks.push(t); }
         } else if(eventType==='DELETE'){
           const after = tasks.filter(x=>x.id!==ol.id);
-          // Ignora DELETE que zeraria lista inteira (proteção anti-bug)
+          // Proteção: ignora DELETE suspeito que reduziria lista em mais de 50%
+          // (pode ser bug do realtime, não ação real do usuário)
+          if(tasks.length > 2 && after.length < tasks.length * 0.5){
+            console.warn('[realtime] DELETE suspeito ignorado — reduziria lista de',tasks.length,'para',after.length);
+            return;
+          }
+          // Ignora DELETE que zeraria lista completamente
           if(after.length===0 && tasks.length>1){
-            console.warn('Realtime DELETE suspeito ignorado — zeraria lista. id=', ol.id);
+            console.warn('[realtime] DELETE ignorado — zeraria lista. id=', ol.id);
             return;
           }
           tasks = after;
         }
-        // Atualiza cache e histórico após evento remoto
         if(tasks.length > 0) cacheWrite({tasks, ts: Date.now()});
         saveH(); render();
       }
