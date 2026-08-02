@@ -827,8 +827,8 @@ body{-webkit-text-size-adjust:100%;touch-action:pan-x pan-y;overscroll-behavior:
 // ╔══════════════════════════════════════════════════════╗
 // ║  SUPABASE CONFIG — substitua com suas credenciais   ║
 // ╚══════════════════════════════════════════════════════╝
-const SUPABASE_URL     = 'https://ktldhmnokiehqydqzjbf.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt0bGRobW5va2llaHF5ZHF6amJmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1ODUxOTksImV4cCI6MjA5NDE2MTE5OX0.G9GXAPlnBfofkfH6K90x7vM3zDPrX5EfwHt-Ziijcng';
+const SUPABASE_URL     = 'https://SEU-PROJETO.supabase.co';
+const SUPABASE_ANON_KEY = 'sua-anon-key-aqui';
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -942,6 +942,27 @@ function saveH(){
 // Chamado no boot — salva snapshot de todos os dias carregados do Supabase
 function autoSaveHistory(){
   if(tasks.length > 0) saveH();
+}
+
+// ── Limpeza automática: remove tarefas com mais de 15 dias ──
+// Roda uma vez por dia no boot para manter o banco leve
+async function autoCleanOldTasks(){
+  if(!currentUser || !isOnline) return;
+  const lastClean = localStorage.getItem('df_last_clean');
+  const today = todayStr();
+  if(lastClean === today) return; // já limpou hoje
+
+  try{
+    const cutoff = dAdd(today, -15);
+    const {error, count} = await sb.from('tasks')
+      .delete({count:'exact'})
+      .eq('user_id', currentUser.id)
+      .lt('date', cutoff);
+    if(!error){
+      localStorage.setItem('df_last_clean', today);
+      if(count > 0) console.log('[autoClean] removidas', count, 'tarefas anteriores a', cutoff);
+    }
+  }catch(e){ console.warn('[autoClean]', e); }
 }
 
 // ── Preferências (tema) ──
@@ -1156,6 +1177,7 @@ async function _doBootApp(){
   render();
   await checkPending();
   autoSaveHistory();
+  autoCleanOldTasks(); // limpeza silenciosa de tarefas antigas (>15 dias)
   updFocusUI();
   upFocusTotalDisp();
   subscribeRealtime();
